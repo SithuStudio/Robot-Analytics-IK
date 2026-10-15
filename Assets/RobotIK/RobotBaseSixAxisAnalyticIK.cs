@@ -13,6 +13,27 @@ namespace RobotIK
     [RequireComponent(typeof(RobotBaseSixAxisRig))]
     public sealed class RobotBaseSixAxisAnalyticIK : MonoBehaviour
     {
+        public enum ShoulderPosture
+        {
+            Automatic,
+            Left,
+            Right
+        }
+
+        public enum ElbowPosture
+        {
+            Automatic,
+            Up,
+            Down
+        }
+
+        public enum WristPosture
+        {
+            Automatic,
+            NonFlip,
+            Flip
+        }
+
         private const float GeometryTolerance = 0.015f;
         private const float AxisTolerance = 0.025f;
         private const float Epsilon = 1e-6f;
@@ -28,6 +49,11 @@ namespace RobotIK
         [SerializeField, Min(0f)] private float positionTolerance = 0.001f;
         [SerializeField, Min(0f)] private float orientationToleranceDegrees = 0.25f;
         [SerializeField] private bool chooseNearestSolution = true;
+        [Header("Analytical Branch Selection")]
+        [SerializeField] private ShoulderPosture shoulderPosture = ShoulderPosture.Automatic;
+        [Tooltip("Up selects the positive elbow-plane branch; Down selects the negative branch.")]
+        [SerializeField] private ElbowPosture elbowPosture = ElbowPosture.Automatic;
+        [SerializeField] private WristPosture wristPosture = WristPosture.Automatic;
 
         private readonly Vector3[] homeOrigins = new Vector3[RobotBaseSixAxisRig.JointCount];
         private readonly Vector3[] homeAxes = new Vector3[RobotBaseSixAxisRig.JointCount];
@@ -184,6 +210,7 @@ namespace RobotIK
             // Use the actual shoulder-to-wrist radius for the elbow law of cosines.
             for (int baseBranch = 0; baseBranch < baseAngles.Length; baseBranch++)
             {
+                if (!AllowsShoulderBranch(baseBranch)) continue;
                 float q1 = baseAngles[baseBranch];
                 Quaternion rotateBase = Quaternion.AngleAxis(q1 * Mathf.Rad2Deg, baseAxis);
                 Vector3 shoulder = homeOrigins[0] + rotateBase * (homeOrigins[1] - homeOrigins[0]);
@@ -199,6 +226,7 @@ namespace RobotIK
                 float elbowMagnitude = Mathf.Acos(elbowCosine);
                 for (int elbowBranch = 0; elbowBranch < 2; elbowBranch++)
                 {
+                    if (!AllowsElbowBranch(elbowBranch)) continue;
                     float q3Effective = elbowBranch == 0 ? elbowMagnitude : -elbowMagnitude;
                     float q2 = goalAngle - Mathf.Atan2(link2Length * Mathf.Sin(q3Effective),
                         link1Length + link2Length * Mathf.Cos(q3Effective));
@@ -213,8 +241,10 @@ namespace RobotIK
                             out float q4b, out float q5b, out float q6b))
                         continue;
 
-                    AddLimitedSolution(solutions, q1, q2, q3, q4a, q5a, q6a);
-                    AddLimitedSolution(solutions, q1, q2, q3, q4b, q5b, q6b);
+                    if (AllowsWristBranch(0))
+                        AddLimitedSolution(solutions, q1, q2, q3, q4a, q5a, q6a);
+                    if (AllowsWristBranch(1))
+                        AddLimitedSolution(solutions, q1, q2, q3, q4b, q5b, q6b);
                 }
             }
 
@@ -265,13 +295,14 @@ namespace RobotIK
             rig.SetJointAngles(current);
             if (bestSolution == null)
             {
-                CalibrationStatus = "No analytical branch passed forward-kinematics closure. Check pivot placement, axis directions, and TCP frame.";
+                CalibrationStatus = $"No {BranchSelectionLabel()} analytical branch passed forward-kinematics closure. " +
+                                    "Check the selected posture, pivot placement, axis directions, and TCP frame.";
                 return false;
             }
 
             rig.SetJointAngles(bestSolution);
             selectedSolution = bestSolution;
-            CalibrationStatus = $"Solved with {solutions.Count} valid analytical branch(es).";
+            CalibrationStatus = $"Solved with {solutions.Count} valid {BranchSelectionLabel()} analytical branch(es).";
             return true;
         }
 
@@ -296,6 +327,21 @@ namespace RobotIK
                 stableUp = Vector3.ProjectOnPlane(target.up, targetZ);
             return Quaternion.LookRotation(targetZ, stableUp.normalized);
         }
+
+        private bool AllowsShoulderBranch(int branch) =>
+            shoulderPosture == ShoulderPosture.Automatic ||
+            (shoulderPosture == ShoulderPosture.Left ? branch == 0 : branch == 1);
+
+        private bool AllowsElbowBranch(int branch) =>
+            elbowPosture == ElbowPosture.Automatic ||
+            (elbowPosture == ElbowPosture.Up ? branch == 0 : branch == 1);
+
+        private bool AllowsWristBranch(int branch) =>
+            wristPosture == WristPosture.Automatic ||
+            (wristPosture == WristPosture.NonFlip ? branch == 0 : branch == 1);
+
+        private string BranchSelectionLabel() =>
+            $"{shoulderPosture} shoulder / {elbowPosture} elbow / {wristPosture} wrist";
 
         [ContextMenu("Solve Current Target Now")]
         private void SolveTargetFromContextMenu()

@@ -336,6 +336,9 @@ MonoBehaviour:
   positionTolerance: 0.001
   orientationToleranceDegrees: 0.25
   chooseNearestSolution: 1
+  shoulderPosture: 0
+  elbowPosture: 0
+  wristPosture: 0
 --- !u!1001 &2548186954281641944
 PrefabInstance:
   m_ObjectHideFlags: 0

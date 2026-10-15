@@ -41,6 +41,19 @@ your controller supplies a complete TCP rotation through `SolveNow`.
 The scene's `T1` TCP frame is rotated `Y = -90°` below the imported flange so its local +Z
 axis points outward from the physical tool.
 
+### Choose an analytical robot posture
+
+On `RobotBaseSixAxisAnalyticIK`, use **Analytical Branch Selection** to choose the posture:
+
+- **Shoulder Posture**: Automatic, Left, or Right.
+- **Elbow Posture**: Automatic, Up, or Down. Up is the positive elbow-plane branch; Down is
+  the negative branch.
+- **Wrist Posture**: Automatic, Non-Flip, or Flip.
+
+Automatic considers every valid branch and then selects the one nearest to the current joint
+state. A forced posture returns no solution when that branch violates a joint limit or cannot
+reach the Target.
+
 The solver checks its required geometry at calibration: J1 is perpendicular to parallel J2/J3,
 and J4/J5/J6 form a concurrent spherical wrist. If the imported pivots or local axes do not
 meet those conditions, calibration reports which condition failed instead of silently returning
