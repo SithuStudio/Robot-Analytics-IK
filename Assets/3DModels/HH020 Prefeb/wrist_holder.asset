@@ -1,0 +1,64 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 383914d3a27c7384aba3981b475a4658, type: 3}
+  m_Name: wrist_holder
+  m_EditorClassIdentifier: Unity.Pixyz.Plugin4Unity.Editor::UnityEditor.PixyzPlugin4Unity.CADImporterScriptableObject
+  <FilePath>k__BackingField: Robot\Hyundai\HH020\hh020\visual\wrist_holder.stl
+  m_Prefab: {fileID: 5845146800302413572, guid: 9296bd00f4d4c734987ca598e6e744b3, type: 3}
+  m_Scene: {fileID: 0}
+  <ImportMode>k__BackingField: 0
+  <ImportAllFilesInFolder>k__BackingField: 0
+  <PreferAlternativeImporters>k__BackingField: 0
+  <Scale>k__BackingField: 0.001
+  <Orientation>k__BackingField: 1
+  <IsLeftHanded>k__BackingField: 0
+  <IsZUp>k__BackingField: 1
+  <AvoidNegativeScale>k__BackingField: 1
+  <PreserveHierarchy>k__BackingField: 1
+  <RuleSet>k__BackingField: {fileID: 11400000, guid: 165dec7c622ce52448ae6a647a65ce8a, type: 2}
+  <ImportMetadata>k__BackingField: 1
+  <ImportPatchBoundaries>k__BackingField: 0
+  <ImportLines>k__BackingField: 0
+  <ImportPoints>k__BackingField: 0
+  <ImportNestedPrefabs>k__BackingField: 0
+  <ImportAnimations>k__BackingField: 0
+  <ImportVariants>k__BackingField: 0
+  <ImportPMI>k__BackingField: 0
+  <StitchPatches>k__BackingField: 0
+  <Use16BitsBuffers>k__BackingField: 0
+  <ReorientFaces>k__BackingField: 0
+  <RepairInstances>k__BackingField: 0
+  <MeshQuality>k__BackingField: 0
+  <CreateLightmapUVs>k__BackingField: 0
+  <LightmapResolution>k__BackingField: 1024
+  <LightmapPadding>k__BackingField: 4
+  <CreateUVs>k__BackingField: 0
+  <UVSize>k__BackingField: 1
+  <CustomMaxSag>k__BackingField: 0.1
+  <CustomSagRatio>k__BackingField: 0.0001
+  <CustomSurfacicTolerance>k__BackingField: 3
+  <CustomLineicTolerance>k__BackingField: -1
+  <CustomNormalTolerance>k__BackingField: 15
+  <LODGenerator>k__BackingField:
+    <Rules>k__BackingField: []
+    <CompressTextures>k__BackingField: 1
+    <GPUBaking>k__BackingField: 0
+    <BakingOffset>k__BackingField: 0
+    <BakingUpSampling>k__BackingField: 2
+    <AutoComputeThresholds>k__BackingField: 0
+    <FilterTransparentObjects>k__BackingField: 1
+    <SaveAssets>k__BackingField: 1
+    <SaveAssetsPath>k__BackingField: Assets/LODs
+    <Assets>k__BackingField: []
+  references:
+    version: 2
+    RefIds: []
