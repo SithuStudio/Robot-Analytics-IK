@@ -71,6 +71,8 @@ namespace RobotIK
         private bool calibrated;
 
         public Transform Target { get => target; set => target = value; }
+        /// <summary>When enabled, Update continuously overrides external joint motion.</summary>
+        public bool SolveContinuously { get => solveContinuously; set => solveContinuously = value; }
         public bool IsCalibrated => calibrated;
         public string CalibrationStatus { get; private set; } = "Not calibrated";
 
