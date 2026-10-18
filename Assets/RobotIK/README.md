@@ -4,6 +4,52 @@ This folder contains a six- or seven-revolute-joint Unity rig builder and a pose
 It is configured with **standard Denavit–Hartenberg (DH)** rows and solved with damped
 least squares.
 
+## Standalone six-axis motion planners
+
+Each motion planner is a plain C# class in `Assets/RobotIK/Planners`, in the `RobotIK`
+namespace. The Inspector dropdown selects these classes through
+`RobotBaseSixAxisPlannerAlgorithm`, which now holds the shared data types and dispatches
+requests. The enum values and existing `TryPlan` / `SearchGridSnapshot` calls are preserved.
+
+| Inspector algorithm | Class / source file |
+| --- | --- |
+| Fast RRT-Connect | `FastRrtConnectPlanner.cs` |
+| Optimized RRT-Connect | `OptimizedRrtConnectPlanner.cs` |
+| Cartesian Arc | `CartesianArcPlanner.cs` |
+| 3D Grid A* | `GridAStarPlanner.cs` |
+| Joint-Space PRM | `JointSpacePrmPlanner.cs` |
+| Informed RRT* | `InformedRrtStarPlanner.cs` |
+
+`RobotBaseSixAxisPlanner` provides the common `TryPlan` method, world validation, sampling,
+and path costs. `RrtConnectPlannerBase` shares bidirectional tree expansion between the two
+RRT-Connect variants. J6 roll refinement belongs to `OptimizedRrtConnectPlanner`.
+
+From any caller with a configured `RobotBaseSixAxisPlannerAlgorithm.World`, instantiate the
+class directly:
+
+```csharp
+RobotBaseSixAxisPlanner planner = new OptimizedRrtConnectPlanner(world);
+bool found = planner.TryPlan(
+    startAngles, goalAngles,
+    startPosition, startRotation, goalPosition, goalRotation,
+    out RobotBaseSixAxisPlannerAlgorithm.Result result);
+```
+
+Alternatively, call `new RobotBaseSixAxisPlannerAlgorithm(world).CreatePlanner(kind)`.
+The caller supplies joint limits, collision/IK/FK callbacks, costs, and cancellation through
+`world`. Calls execute on the calling thread. Unity physics and Transform callbacks require
+the main thread; `RobotBaseSixAxisMotionPlanner` handles that scheduling for background
+searches. `GridAStarPlanner.SearchSnapshot(snapshot)` accepts copied value data and can run
+directly on a worker thread.
+
+Optimized RRT-Connect first seeks a feasible route using ordinary joint distance, then
+compares routes using TCP distance and the J6 travel penalty. Wrist weights guide refinement
+without shrinking **Extension Step Degrees**. Once a route exists, refinement uses at most
+128 additional iterations within **Maximum Iterations**. Identical swept edges are cached
+inside each worker search; separate segments/IK-branch attempts use deterministic but
+distinct random streams. Failure status identifies the failing segment and reports the
+start/goal tree sizes and how many iterations were blocked by collision or clearance.
+
 ## Bind the imported Robot Base hierarchy
 
 `RobotBaseSixAxisRig` is the starting rig for the imported `Robot Base` object with nested
@@ -201,3 +247,14 @@ joint names.
 
 This is a generic system, not a calibrated Hyundai HH020 model. HH020 is six-axis, so use
 six DH rows for it. The solver can also use seven rows for a seven-axis robot.
+## Adaptive goal
+
+Enable **Adaptive Goal** in the motion planner Inspector to try nearby TCP goal poses when the exact End Target has no valid IK branch. It is disabled by default.
+
+- **Adaptive Goal Position Tolerance Millimeters**: maximum displacement from B, in mm (default 10). Set to 0 to keep its position fixed.
+- **Adaptive Goal Rotation Tolerance Degrees**: maximum orientation change (default 10). Set to 0 to keep its orientation fixed. This applies even when marker orientations are disabled.
+- **Adaptive Goal Maximum Samples**: limits nearby poses checked (default 256). The deterministic sampler checks smaller normalized pose deviations first and accepts the first valid pose. A lower budget can miss a feasible pose.
+
+The original End Target transform is unchanged. Every accepted IK branch must satisfy the configured minimum obstacle clearance and actual TCP pose tolerances. Start and intermediate waypoints remain strict. All six planners use the selected goal, including replay and final pose checks. Status and Inspector metrics report sampled goal offsets; the final waypoint is labeled **B / Adaptive Goal**, with an amber gizmo marking its offset from the requested goal.
+
+This is a bounded sampled fallback, so it cannot guarantee a feasible goal or the nearest possible goal. It runs when the exact endpoint is invalid; it does not retry alternate goals after a route search fails. For example, a wrist reporting 24 mm clearance at B cannot satisfy a 30 mm requirement at that exact pose. A nearby position or orientation may provide the missing clearance without lowering the requirement.

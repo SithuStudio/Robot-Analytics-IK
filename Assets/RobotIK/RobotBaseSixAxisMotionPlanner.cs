@@ -28,7 +28,11 @@ namespace RobotIK
             [InspectorName("Cartesian Arc (TCP path with collision checks)")]
             CartesianArc,
             [InspectorName("3D Grid A* (Cartesian occupancy search)")]
-            GridAStar
+            GridAStar,
+            [InspectorName("Joint-Space PRM (sampled roadmap)")]
+            JointSpacePrm,
+            [InspectorName("Informed RRT* (joint-space optimization)")]
+            InformedRrtStar
         }
 
         private const int JointCount = RobotBaseSixAxisRig.JointCount;
@@ -41,6 +45,16 @@ namespace RobotIK
         [SerializeField] private Transform endTarget;
         [Tooltip("When disabled, A and B are position targets and the tool keeps its current world orientation.")]
         [SerializeField] private bool useMarkerOrientations;
+        [Header("Adaptive Goal")]
+        [Tooltip("If the exact End Target has no valid IK branch, try nearby goal poses within these tolerances. All robot collision and minimum clearance checks still apply. The End Target transform is not moved.")]
+        [SerializeField] private bool adaptiveGoal;
+        [Tooltip("Maximum distance from the requested goal, in millimeters. Set 0 to keep B's position fixed.")]
+        [SerializeField, Min(0f)] private float adaptiveGoalPositionToleranceMillimeters = 10f;
+        [Tooltip("Maximum change from the requested TCP orientation. Set 0 to keep its orientation fixed. Applies to the goal even when Use Marker Orientations is off.")]
+        [SerializeField, Range(0f, 180f)] private float adaptiveGoalRotationToleranceDegrees = 10f;
+        [Tooltip("Maximum nearby poses tested after the exact goal fails. 256 covers all default sampler candidates; lower budgets may miss a feasible nearby goal.")]
+        [SerializeField, Range(1, 512)] private int adaptiveGoalMaximumSamples = 256;
+        [Header("Environment & Search")]
         [SerializeField] private Transform obstaclesRoot;
         [Tooltip("Optional explicit collision geometry. If empty, all colliders under the robot are used.")]
         [SerializeField] private Collider[] robotColliders;
@@ -50,10 +64,13 @@ namespace RobotIK
         [SerializeField, Range(0.5f, 1f)] private float robotBoxColliderScale = 0.95f;
         [SerializeField, Min(1f)] private float extensionStepDegrees = 20f;
         [SerializeField, Min(0.5f)] private float collisionResolutionDegrees = 4f;
-        [Tooltip("Fast stops at the first safe route. Optimized searches for shorter joint-space routes before execution.")]
+        [Tooltip("Fast stops at the first safe route. Optimized ranks routes by TCP travel distance plus the configured J6 travel penalty.")]
         [SerializeField] private PlannerAlgorithm plannerAlgorithm = PlannerAlgorithm.RRTConnectOptimized;
         [Tooltip("Voxel width for the 3D Cartesian occupancy grid, in millimeters. Smaller cells give finer routes but require more search.")]
         [SerializeField, Min(10f)] private float gridCellSizeMillimeters = 100f;
+        [Tooltip("Side length in meters of the cubic 3D grid workspace. The workspace is centered on Grid Workspace Center, or halfway between Start and End Target when no center is assigned.")]
+        [SerializeField, Min(0.1f)] private float gridWorkspaceSizeMeters = 2f;
+        [SerializeField] private Transform gridWorkspaceCenter;
         [Tooltip("Inflation around obstacle bounds in the occupancy grid, in millimeters. The final route is also checked with the full robot colliders and minimum clearance.")]
         [SerializeField, Min(0f)] private float gridObstacleInflationMillimeters = 50f;
         [Tooltip("Maximum A* grid cells expanded for each Cartesian segment.")]
@@ -67,12 +84,15 @@ namespace RobotIK
         [SerializeField, Range(100, 10000)] private int maximumGridGizmoCells = 2500;
         [Tooltip("Penalty applied to squared J4-J6 changes when ranking branches and searching joint space. Higher values discourage unnecessary TCP wrist rotation, but can favor larger shoulder/elbow movements.")]
         [FormerlySerializedAs("j4MotionPenalty"), SerializeField, Min(1f)] private float wristMotionPenalty = 3f;
+        [Tooltip("Optimized RRT-Connect adds this many millimeters of route cost for each degree of J6 travel. Increase it to discourage tool-roll detours; 0 ranks by TCP distance alone.")]
+        [SerializeField, Min(0f)] private float joint6TravelPenaltyMillimetersPerDegree = 1f;
         [Tooltip("Additional cost per degree of TCP orientation change along a joint-space path. Increase this to favor paths with steadier tool orientation.")]
         [SerializeField, Min(0f)] private float tcpRotationMotionPenalty = 4f;
         [Tooltip("Required minimum distance between robot and obstacle collider surfaces, in world meters. Applied to endpoints and every sampled path pose.")]
         [SerializeField, Min(0f), HideInInspector] private float minimumObstacleClearance = 0.05f;
+        [Tooltip("Search budget. For PRM, this is the random-sample budget (capped at 600). For RRT, it is the total iteration limit. Optimized RRT-Connect stops after at most 128 extra refinement iterations once it finds a safe route.")]
         [SerializeField, Min(1)] private int maximumIterations = 4500;
-        [Tooltip("Optimized RRT-Connect ranks collision-free routes by TCP travel distance and keeps the displayed path near this many points, including Start and Goal. Extra points are retained when needed for collision safety.")]
+        [Tooltip("Optimized RRT-Connect ranks collision-free routes by TCP distance plus J6 travel penalty, and keeps the displayed path near this many points, including Start and Goal. Extra points are retained when needed for collision safety.")]
         [SerializeField, Range(2, 12)] private int optimizedRrtWaypointBudget = 5;
         [SerializeField, Min(0f)] private float goalBias = 0.08f;
         [Tooltip("Approximate TCP translation speed along the planned path, in millimeters per second.")]
@@ -95,6 +115,13 @@ namespace RobotIK
         [SerializeField, Min(0f)] private float rotationClosureToleranceDegrees = 2f;
         private Vector3 plannedGoalPosition;
         private Quaternion plannedGoalRotation;
+        private Vector3 requestedGoalPosition;
+        private Quaternion requestedGoalRotation;
+        private bool adaptiveGoalUsed;
+        private bool adaptiveGoalSearchAttempted;
+        private int adaptiveGoalSamplesTried;
+        private float adaptiveGoalPositionOffsetMillimeters;
+        private float adaptiveGoalRotationOffsetDegrees;
 
         private readonly List<float[]> path = new List<float[]>();
         [System.NonSerialized] private readonly Dictionary<BoxCollider, Vector3> originalRobotBoxSizes =
@@ -103,6 +130,7 @@ namespace RobotIK
         private System.Random random;
         private Coroutine execution;
         private int planningIterations;
+        private int jointSearchSequence;
         private int currentRrtSearchIterations;
         private int rrtSearchInProgress;
         private int gridRouteAttempts;
@@ -121,11 +149,14 @@ namespace RobotIK
         private readonly List<TextMesh> waypointLabels = new List<TextMesh>();
         private string lastCartesianFailure = "No Cartesian arc was checked.";
         private string lastGridFailure = "No grid route was checked.";
+        private string lastJointPlannerFailure = "No joint-space route was found.";
         [SerializeField, HideInInspector] private Vector3[] gizmoGridOccupiedCells = Array.Empty<Vector3>();
         [SerializeField, HideInInspector] private Vector3[] gizmoGridRoutePoints = Array.Empty<Vector3>();
         [SerializeField, HideInInspector] private Vector3 gizmoGridFailurePosition;
         [SerializeField, HideInInspector] private bool hasGridFailurePosition;
         [SerializeField, HideInInspector] private float gizmoGridCellSize;
+        [SerializeField, HideInInspector] private Bounds gizmoGridWorkspace;
+        [SerializeField, HideInInspector] private bool hasGridWorkspace;
 
         [SerializeField, TextArea(1, 3)] private string status = "Assign Start, End Target, and Obstacles.";
         [SerializeField, HideInInspector] private Vector3[] gizmoPath = Array.Empty<Vector3>();
@@ -142,6 +173,11 @@ namespace RobotIK
         public PlannerAlgorithm SelectedPlanner => plannerAlgorithm;
         public int CartesianArcAttempts => cartesianArcAttempts;
         public float PlanningTimeSeconds => planningTimeSeconds;
+        public bool AdaptiveGoalEnabled => adaptiveGoal;
+        public bool UsedAdaptiveGoal => adaptiveGoalUsed;
+        public int AdaptiveGoalSamplesTried => adaptiveGoalSamplesTried;
+        public float AdaptiveGoalPositionOffsetMillimeters => adaptiveGoalPositionOffsetMillimeters;
+        public float AdaptiveGoalRotationOffsetDegrees => adaptiveGoalRotationOffsetDegrees;
         [SerializeField, HideInInspector] private float planningTimeSeconds;
 
         private void Reset()
@@ -204,10 +240,14 @@ namespace RobotIK
             collisionResolutionDegrees = Mathf.Max(0.5f, collisionResolutionDegrees);
             minimumObstacleClearance = Mathf.Max(0f, minimumObstacleClearance);
             wristMotionPenalty = Mathf.Max(1f, wristMotionPenalty);
+            joint6TravelPenaltyMillimetersPerDegree = Mathf.Max(0f, joint6TravelPenaltyMillimetersPerDegree);
             robotBoxColliderScale = Mathf.Clamp(robotBoxColliderScale, 0.5f, 1f);
             tcpSpeedMillimetersPerSecond = Mathf.Max(1f, tcpSpeedMillimetersPerSecond);
             tcpRotationSpeedDegreesPerSecond = Mathf.Max(1f, tcpRotationSpeedDegreesPerSecond);
             maximumIterations = Mathf.Max(1, maximumIterations);
+            adaptiveGoalPositionToleranceMillimeters = Mathf.Max(0f, adaptiveGoalPositionToleranceMillimeters);
+            adaptiveGoalRotationToleranceDegrees = Mathf.Clamp(adaptiveGoalRotationToleranceDegrees, 0f, 180f);
+            adaptiveGoalMaximumSamples = Mathf.Clamp(adaptiveGoalMaximumSamples, 1, 512);
             goalBias = Mathf.Clamp01(goalBias);
             CorrectSwappedPoseReferences();
         }
@@ -323,12 +363,14 @@ namespace RobotIK
             CancelGridSearch();
             gridSearchCancellation = new CancellationTokenSource();
             planningIterations = 0;
+            jointSearchSequence = 0;
             rrtCollisionCache.Clear();
             rrtTcpTravelCache.Clear();
             System.Threading.Interlocked.Exchange(ref currentRrtSearchIterations, 0);
             gridRouteAttempts = 0;
             cartesianArcAttempts = 0;
             lastPlanSummary = string.Empty;
+            lastJointPlannerFailure = "No joint-space route was found.";
             planningTimeSeconds = 0f;
             planningTimer = System.Diagnostics.Stopwatch.StartNew();
             path.Clear();
@@ -348,24 +390,25 @@ namespace RobotIK
             Quaternion preferredRotation = GetCurrentTcp().rotation;
             Quaternion startRotation = useMarkerOrientations ? startPose.rotation : preferredRotation;
             Quaternion goalRotation = useMarkerOrientations ? endTarget.rotation : preferredRotation;
-            plannedGoalPosition = endTarget.position;
-            plannedGoalRotation = goalRotation;
-            if (!inverseKinematics.SolveAll(startPose.position, startRotation, out List<float[]> starts) ||
-                !inverseKinematics.SolveAll(endTarget.position, goalRotation, out List<float[]> goals))
+            InitializeGoalSelection(goalRotation);
+            if (!inverseKinematics.SolveAll(startPose.position, startRotation, out List<float[]> starts))
             {
                 rig.SetJointAngles(originalAngles);
-                Fail("Start or End Target pose is unreachable by the analytic IK.");
+                Physics.SyncTransforms();
+                Fail("Start pose is unreachable by the analytic IK.");
                 execution = null;
                 yield break;
             }
 
             List<float[]> validStarts = FilterPoseSolutions(starts, startPose, startRotation, out PoseCheckReport startReport);
-            List<float[]> validGoals = FilterPoseSolutions(goals, endTarget, goalRotation, out PoseCheckReport goalReport);
             rig.SetJointAngles(originalAngles);
             Physics.SyncTransforms();
+            List<float[]> validGoals = SolveGoalPose(plannedGoalPosition, plannedGoalRotation, false, out PoseCheckReport goalReport);
+            if (validStarts.Count > 0 && validGoals.Count == 0 && adaptiveGoal)
+                yield return StartCoroutine(FindAdaptiveGoalOverFrames(found => validGoals = found));
             if (validStarts.Count == 0 || validGoals.Count == 0)
             {
-                Fail($"No collision-free IK solution. {DescribePoseCheck(startPose, startReport)} {DescribePoseCheck(endTarget, goalReport)}");
+                Fail($"No collision-free IK solution. {DescribePoseCheck(startPose, startReport)} {DescribePoseCheck(endTarget, goalReport)}{AdaptiveGoalFailureSummary}");
                 execution = null;
                 yield break;
             }
@@ -427,7 +470,7 @@ namespace RobotIK
                 path.AddRange(bestCartesianPath);
                 // Keep the Cartesian samples: joint-space shortcutting would pull the
                 // TCP away from the selected Cartesian arc even if it remains collision-free.
-                lastPlanSummary = $"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).";
+                SetPlanSummary($"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
                 Status = lastPlanSummary;
                 Debug.Log($"Motion planner: {Status}", this);
                 DrawPlannedPath();
@@ -467,7 +510,7 @@ namespace RobotIK
                     yield break;
                 }
                 hasGridFailurePosition = false;
-                lastPlanSummary = $"Plan found with 3D Grid A* after {gridRouteAttempts} route attempt(s) and {planningIterations} grid nodes expanded in {FinishPlanningTimer()} ({path.Count} waypoints).";
+                SetPlanSummary($"Plan found with 3D Grid A* after {gridRouteAttempts} route attempt(s) and {planningIterations} grid nodes expanded in {FinishPlanningTimer()} ({path.Count} waypoints).");
                 Status = lastPlanSummary;
                 Debug.Log($"Motion planner: {Status}", this);
                 DrawPlannedPath();
@@ -486,7 +529,7 @@ namespace RobotIK
                 path.Clear();
                 bool reachedStart = false;
                 yield return StartCoroutine(TryConnectOverFrames(originalAngles, validStarts[s], originalAngles,
-                    result => reachedStart = result));
+                    result => reachedStart = result, "Current pose to Start"));
                 if (!reachedStart) continue;
 
                 bool reachedGoal = false;
@@ -499,13 +542,13 @@ namespace RobotIK
             Physics.SyncTransforms();
             if (!foundPath)
             {
-                Fail($"No collision-free path found after {planningIterations} search iterations. Try more iterations or adjust the obstacles/targets.");
+                Fail($"{lastJointPlannerFailure} Search used {planningIterations} iterations. Try more iterations or adjust the obstacles/targets.");
                 execution = null;
                 yield break;
             }
 
             if (!HasIntermediateWaypoints()) SimplifyPath();
-            lastPlanSummary = $"Plan found with {GetPlannerAlgorithmLabel()} after {planningIterations} search iterations in {FinishPlanningTimer()} ({path.Count} waypoints).";
+            SetPlanSummary($"Plan found with {GetPlannerAlgorithmLabel()} after {planningIterations} search iterations in {FinishPlanningTimer()} ({path.Count} waypoints).");
             Status = lastPlanSummary;
             Debug.Log($"Motion planner: {Status}", this);
             DrawPlannedPath();
@@ -514,18 +557,14 @@ namespace RobotIK
         }
 
         private IEnumerator TryConnectOverFrames(float[] start, float[] goal, float[] restoreAngles,
-            Action<bool> completed)
+            Action<bool> completed, string segmentLabel = "Joint segment")
         {
-            Status = plannerAlgorithm == PlannerAlgorithm.RRTConnectFast
-                ? "Searching for a collision-free route on a worker thread..."
-                : "Searching for a shorter route on a worker thread...";
+            Status = $"{segmentLabel}: searching with {GetPlannerAlgorithmLabel()} on a worker thread...";
             CancellationToken token = gridSearchCancellation != null
                 ? gridSearchCancellation.Token : CancellationToken.None;
             System.Threading.Interlocked.Exchange(ref currentRrtSearchIterations, 0);
             System.Threading.Interlocked.Exchange(ref rrtSearchInProgress, 1);
-            var kind = plannerAlgorithm == PlannerAlgorithm.RRTConnectFast
-                ? RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectFast
-                : RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectOptimized;
+            RobotBaseSixAxisPlannerAlgorithm.Kind kind = GetAlgorithmKind();
             Vector3 noPosition = Vector3.zero;
             Quaternion noRotation = Quaternion.identity;
             RobotBaseSixAxisPlannerAlgorithm.World workerWorld = CreateRrtWorkerWorld(restoreAngles, token);
@@ -567,12 +606,14 @@ namespace RobotIK
             if (outcome.Error != null)
             {
                 Debug.LogException(outcome.Error, this);
-                Status = $"RRT search failed: {outcome.Error.Message}";
+                Status = $"{GetPlannerAlgorithmLabel()} search failed: {outcome.Error.Message}";
             }
             if (outcome.Result != null)
             {
                 planningIterations += outcome.Result.Iterations;
                 if (connected) path.AddRange(outcome.Result.JointPath);
+                else if (!string.IsNullOrEmpty(outcome.Result.FailureReason))
+                    lastJointPlannerFailure = $"{segmentLabel}: {outcome.Result.FailureReason}";
             }
             rig.SetJointAngles(restoreAngles);
             Physics.SyncTransforms();
@@ -632,7 +673,11 @@ namespace RobotIK
             Vector2[] limits = rig.AngleLimitsDegrees;
             var copiedLimits = new Vector2[limits.Length];
             Array.Copy(limits, copiedLimits, limits.Length);
-            var workerRandom = new System.Random(randomSeed == 0 ? 1 : randomSeed);
+            // Keep complete replans deterministic while giving different endpoint
+            // branches/segments distinct sample streams within the same plan.
+            int searchSeed = unchecked((randomSeed == 0 ? 1 : randomSeed) + jointSearchSequence++ * 104729);
+            var workerRandom = new System.Random(searchSeed);
+            var sweptSegmentCache = new Dictionary<ExactJointSegmentKey, bool>();
             float copiedWristPenalty = wristMotionPenalty;
             var world = new RobotBaseSixAxisPlannerAlgorithm.World
             {
@@ -641,6 +686,7 @@ namespace RobotIK
                 CollisionResolutionDegrees = collisionResolutionDegrees,
                 GoalBias = goalBias,
                 PrioritizeShortestPath = plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized,
+                Joint6TravelCostPerDegree = joint6TravelPenaltyMillimetersPerDegree * 0.001f,
                 IterationProgress = value => System.Threading.Interlocked.Exchange(ref currentRrtSearchIterations, value),
                 CancellationToken = cancellationToken,
                 Random = workerRandom,
@@ -648,7 +694,6 @@ namespace RobotIK
                 SolveIk = (position, rotation) => null,
                 GetTcpPosition = angles => Vector3.zero,
                 GetTcpRotation = angles => Quaternion.identity,
-                IsConfigurationInCollision = angles => false,
                 RandomConfiguration = () =>
                 {
                     var angles = new float[copiedLimits.Length];
@@ -657,11 +702,28 @@ namespace RobotIK
                             (copiedLimits[joint].y - copiedLimits[joint].x) * (float)workerRandom.NextDouble();
                     return angles;
                 },
+                IsConfigurationInCollision = angles => InvokeRrtMainThread(() =>
+                {
+                    try { return !IsRrtConfigurationFree(angles); }
+                    finally
+                    {
+                        rig.SetJointAngles(restoreAngles);
+                        Physics.SyncTransforms();
+                    }
+                }, cancellationToken),
                 MotionCost = (a, b) => ComputeWorkerMotionCost(a, b, copiedWristPenalty),
                 RouteCost = (a, b) => ComputeWorkerMotionCost(a, b, copiedWristPenalty),
                 TcpTravelCost = (a, b) => InvokeRrtMainThread(() => GetCachedRrtTcpTravelDistance(a, b), cancellationToken),
                 TcpPathCost = states => InvokeRrtMainThread(() => GetTcpPathTravelDistance(states), cancellationToken),
-                IsJointSegmentFree = (a, b) => IsJointSegmentFreeOnWorker(a, b, restoreAngles, cancellationToken)
+                IsJointSegmentFree = (a, b) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var key = new ExactJointSegmentKey(a, b);
+                    if (sweptSegmentCache.TryGetValue(key, out bool free)) return free;
+                    free = IsJointSegmentFreeOnWorker(a, b, restoreAngles, cancellationToken);
+                    sweptSegmentCache[key] = free;
+                    return free;
+                }
             };
             return world;
         }
@@ -709,6 +771,16 @@ namespace RobotIK
             rrtCollisionCache[key] = free;
             return free;
         }
+
+        private RobotBaseSixAxisPlannerAlgorithm.Kind GetAlgorithmKind() => plannerAlgorithm switch
+        {
+            PlannerAlgorithm.RRTConnectFast => RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectFast,
+            PlannerAlgorithm.RRTConnectOptimized => RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectOptimized,
+            PlannerAlgorithm.JointSpacePrm => RobotBaseSixAxisPlannerAlgorithm.Kind.JointSpacePrm,
+            PlannerAlgorithm.InformedRrtStar => RobotBaseSixAxisPlannerAlgorithm.Kind.InformedRrtStar,
+            PlannerAlgorithm.CartesianArc => RobotBaseSixAxisPlannerAlgorithm.Kind.CartesianArc,
+            _ => RobotBaseSixAxisPlannerAlgorithm.Kind.GridAStar
+        };
 
         private float GetTcpPathTravelDistance(IReadOnlyList<float[]> states)
         {
@@ -766,6 +838,35 @@ namespace RobotIK
             public override int GetHashCode() => first.GetHashCode() ^ second.GetHashCode();
         }
 
+        // Exact endpoints: a nearby edge is never accepted merely because a cached
+        // edge was free. Owned by one worker search, so no main-thread queue is
+        // required when the identical swept segment is requested again.
+        private readonly struct ExactJointSegmentKey : IEquatable<ExactJointSegmentKey>
+        {
+            private readonly float[] first, second;
+            public ExactJointSegmentKey(float[] from, float[] to)
+            { first = (float[])from.Clone(); second = (float[])to.Clone(); }
+            public bool Equals(ExactJointSegmentKey other) =>
+                (Same(first, other.first) && Same(second, other.second)) ||
+                (Same(first, other.second) && Same(second, other.first));
+            public override bool Equals(object obj) => obj is ExactJointSegmentKey other && Equals(other);
+            public override int GetHashCode() => Hash(first) ^ Hash(second);
+            private static bool Same(float[] a, float[] b)
+            {
+                if (ReferenceEquals(a, b)) return true;
+                if (a == null || b == null || a.Length != b.Length) return false;
+                for (int i = 0; i < a.Length; i++) if (!a[i].Equals(b[i])) return false;
+                return true;
+            }
+            private static int Hash(float[] value)
+            {
+                if (value == null) return 0;
+                int hash = 17;
+                unchecked { for (int i = 0; i < value.Length; i++) hash = hash * 31 + value[i].GetHashCode(); }
+                return hash;
+            }
+        }
+
         private static float ComputeWorkerMotionCost(float[] a, float[] b, float wristPenalty)
         {
             double sum = 0.0;
@@ -794,8 +895,10 @@ namespace RobotIK
             {
                 if (path.Count > pathPrefixCount) path.RemoveRange(pathPrefixCount, path.Count - pathPrefixCount);
                 bool connected = false;
+                string segmentLabel = (stageIndex == 0 ? "Start" : $"Intermediate waypoint {stageIndex}") +
+                    " to " + (stageIndex == stages.Count - 1 ? "End Target" : $"intermediate waypoint {stageIndex + 1}");
                 yield return StartCoroutine(TryConnectOverFrames(from, candidates[i], restoreAngles,
-                    result => connected = result));
+                    result => connected = result, segmentLabel));
                 if (!connected) continue;
 
                 bool remainderConnected = false;
@@ -858,6 +961,8 @@ namespace RobotIK
 
         private string GetPlannerAlgorithmLabel() =>
             plannerAlgorithm == PlannerAlgorithm.RRTConnectFast ? "Fast RRT-Connect" :
+            plannerAlgorithm == PlannerAlgorithm.JointSpacePrm ? "Joint-Space PRM" :
+            plannerAlgorithm == PlannerAlgorithm.InformedRrtStar ? "Informed RRT*" :
             plannerAlgorithm == PlannerAlgorithm.CartesianArc ? "Cartesian Arc" :
             plannerAlgorithm == PlannerAlgorithm.GridAStar ? "3D Grid A*" : "Optimized RRT-Connect";
 
@@ -891,25 +996,29 @@ namespace RobotIK
             float cellSize = Mathf.Max(0.01f, gridCellSizeMillimeters * 0.001f);
             float inflation = Mathf.Max(gridObstacleInflationMillimeters * 0.001f, minimumObstacleClearance) +
                 cellSize * 0.8660254f;
-            Bounds workspace = new Bounds(startPosition, Vector3.zero);
-            workspace.Encapsulate(endPosition);
+            Bounds workspace = GetGridWorkspace(startPosition, endPosition);
+            if (!workspace.Contains(startPosition) || !workspace.Contains(endPosition))
+            {
+                lastGridFailure = "Start or End Target lies outside the configured cubic grid workspace. Move Grid Workspace Center or increase Grid Workspace Size Meters.";
+                Status = lastGridFailure;
+                completed(false);
+                yield break;
+            }
             var inflated = new List<Bounds>();
             for (int i = 0; i < obstacleColliders.Length; i++)
             {
                 Collider obstacle = obstacleColliders[i];
                 if (obstacle == null || !obstacle.enabled || obstacle.isTrigger) continue;
                 Bounds bounds = obstacle.bounds;
-                workspace.Encapsulate(bounds);
                 bounds.Expand(2f * inflation);
                 inflated.Add(bounds);
             }
-            workspace.Expand(Vector3.one * (2f * (inflation + cellSize * 2f)));
             CaptureGridGizmoSnapshot(workspace, inflated, cellSize);
             Vector3 origin = workspace.min;
             Vector3Int ToCell(Vector3 p) => new Vector3Int(
-                Mathf.Clamp(Mathf.RoundToInt((p.x - origin.x) / cellSize), 0, Mathf.CeilToInt(workspace.size.x / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.y - origin.y) / cellSize), 0, Mathf.CeilToInt(workspace.size.y / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.z - origin.z) / cellSize), 0, Mathf.CeilToInt(workspace.size.z / cellSize)));
+                Mathf.Clamp(Mathf.FloorToInt((p.x - origin.x) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.x / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.y - origin.y) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.y / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.z - origin.z) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.z / cellSize) - 1)));
             var forbidden = new List<Vector3Int>();
             string lastRejected = null;
             for (int attempt = 0; attempt < maximumGridRouteAttempts; attempt++)
@@ -985,12 +1094,14 @@ namespace RobotIK
         private void CaptureGridGizmoSnapshot(Bounds workspace, List<Bounds> inflated, float cellSize)
         {
             gizmoGridCellSize = cellSize;
+            gizmoGridWorkspace = workspace;
+            hasGridWorkspace = true;
             Vector3 origin = workspace.min;
             Vector3Int ToCell(Vector3 p) => new Vector3Int(
-                Mathf.Clamp(Mathf.RoundToInt((p.x - origin.x) / cellSize), 0, Mathf.CeilToInt(workspace.size.x / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.y - origin.y) / cellSize), 0, Mathf.CeilToInt(workspace.size.y / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.z - origin.z) / cellSize), 0, Mathf.CeilToInt(workspace.size.z / cellSize)));
-            Vector3 Center(Vector3Int c) => origin + new Vector3(c.x * cellSize, c.y * cellSize, c.z * cellSize);
+                Mathf.Clamp(Mathf.FloorToInt((p.x - origin.x) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.x / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.y - origin.y) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.y / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.z - origin.z) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.z / cellSize) - 1)));
+            Vector3 Center(Vector3Int c) => origin + new Vector3((c.x + 0.5f) * cellSize, (c.y + 0.5f) * cellSize, (c.z + 0.5f) * cellSize);
             float estimate = 0f;
             for (int i = 0; i < inflated.Count; i++)
             {
@@ -1002,6 +1113,7 @@ namespace RobotIK
             for (int i = 0; i < inflated.Count && cells.Count < maximumGridGizmoCells; i++)
             {
                 Bounds b = inflated[i];
+                if (!workspace.Intersects(b)) continue;
                 Vector3Int low = ToCell(b.min), high = ToCell(b.max);
                 for (int x = low.x; x <= high.x && cells.Count < maximumGridGizmoCells; x += stride)
                 for (int y = low.y; y <= high.y && cells.Count < maximumGridGizmoCells; y += stride)
@@ -1011,13 +1123,26 @@ namespace RobotIK
             gizmoGridOccupiedCells = cells.ToArray();
         }
 
+        private Bounds GetGridWorkspace(Vector3 startPosition, Vector3 endPosition)
+        {
+            Vector3 center = gridWorkspaceCenter != null
+                ? gridWorkspaceCenter.position
+                : startPose != null && endTarget != null
+                    ? (startPose.position + endTarget.position) * 0.5f
+                    : (startPosition + endPosition) * 0.5f;
+            float size = Mathf.Max(0.1f, gridWorkspaceSizeMeters);
+            gizmoGridWorkspace = new Bounds(center, Vector3.one * size);
+            hasGridWorkspace = true;
+            return gizmoGridWorkspace;
+        }
+
         private IEnumerator TryBuildGridTailOnWorker(float[] fromAngles, Vector3 fromPosition,
             Quaternion fromRotation, List<Transform> poses, List<List<float[]>> poseSolutions,
             int stageIndex, List<float[]> accumulatedPath, Quaternion defaultRotation, Action<bool> completed)
         {
             if (stageIndex >= poses.Count) { completed(true); yield break; }
             Transform pose = poses[stageIndex];
-            Quaternion targetRotation = useMarkerOrientations ? pose.rotation : defaultRotation;
+            GetPlanningPose(pose, defaultRotation, out Vector3 targetPosition, out Quaternion targetRotation);
             List<float[]> candidates = poseSolutions[stageIndex];
             SortByDistance(candidates, fromAngles);
             int prefixCount = accumulatedPath.Count;
@@ -1026,11 +1151,11 @@ namespace RobotIK
                 var segment = new List<float[]>();
                 bool segmentFound = false;
                 yield return StartCoroutine(TryBuildGridSegmentOnWorker(fromAngles, fromPosition, fromRotation,
-                    candidates[i], pose.position, targetRotation, segment, ok => segmentFound = ok));
+                    candidates[i], targetPosition, targetRotation, segment, ok => segmentFound = ok));
                 if (!segmentFound) continue;
                 for (int p = 1; p < segment.Count; p++) accumulatedPath.Add(segment[p]);
                 bool tailFound = false;
-                yield return StartCoroutine(TryBuildGridTailOnWorker(candidates[i], pose.position, targetRotation,
+                yield return StartCoroutine(TryBuildGridTailOnWorker(candidates[i], targetPosition, targetRotation,
                     poses, poseSolutions, stageIndex + 1, accumulatedPath, defaultRotation, ok => tailFound = ok));
                 if (tailFound) { completed(true); yield break; }
                 accumulatedPath.RemoveRange(prefixCount, accumulatedPath.Count - prefixCount);
@@ -1045,18 +1170,19 @@ namespace RobotIK
             float cellSize = Mathf.Max(0.01f, gridCellSizeMillimeters * 0.001f);
             float inflation = Mathf.Max(gridObstacleInflationMillimeters * 0.001f, minimumObstacleClearance) +
                 cellSize * 0.8660254f;
-            Bounds workspace = new Bounds(startPosition, Vector3.zero);
-            workspace.Encapsulate(endPosition);
-            for (int i = 0; i < obstacleColliders.Length; i++)
-                if (obstacleColliders[i] != null && obstacleColliders[i].enabled)
-                    workspace.Encapsulate(obstacleColliders[i].bounds);
-            workspace.Expand(Vector3.one * (2f * (inflation + cellSize * 2f)));
+            Bounds workspace = GetGridWorkspace(startPosition, endPosition);
+            if (!workspace.Contains(startPosition) || !workspace.Contains(endPosition))
+            {
+                lastGridFailure = "Start or End Target lies outside the configured cubic grid workspace. Move Grid Workspace Center or increase Grid Workspace Size Meters.";
+                Status = lastGridFailure;
+                return false;
+            }
             Vector3 origin = workspace.min;
             GridCell ToCell(Vector3 p) => new GridCell(
-                Mathf.Clamp(Mathf.RoundToInt((p.x - origin.x) / cellSize), 0, Mathf.CeilToInt(workspace.size.x / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.y - origin.y) / cellSize), 0, Mathf.CeilToInt(workspace.size.y / cellSize)),
-                Mathf.Clamp(Mathf.RoundToInt((p.z - origin.z) / cellSize), 0, Mathf.CeilToInt(workspace.size.z / cellSize)));
-            Vector3 Center(GridCell c) => origin + new Vector3(c.x * cellSize, c.y * cellSize, c.z * cellSize);
+                Mathf.Clamp(Mathf.FloorToInt((p.x - origin.x) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.x / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.y - origin.y) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.y / cellSize) - 1)),
+                Mathf.Clamp(Mathf.FloorToInt((p.z - origin.z) / cellSize), 0, Mathf.Max(0, Mathf.CeilToInt(workspace.size.z / cellSize) - 1)));
+            Vector3 Center(GridCell c) => origin + new Vector3((c.x + 0.5f) * cellSize, (c.y + 0.5f) * cellSize, (c.z + 0.5f) * cellSize);
             bool Blocked(GridCell c)
             {
                 Vector3 p = Center(c);
@@ -1342,7 +1468,7 @@ namespace RobotIK
         {
             if (stageIndex >= poses.Count) return true;
             Transform pose = poses[stageIndex];
-            Quaternion targetRotation = useMarkerOrientations ? pose.rotation : defaultRotation;
+            GetPlanningPose(pose, defaultRotation, out Vector3 targetPosition, out Quaternion targetRotation);
             List<float[]> candidates = poseSolutions[stageIndex];
             SortByDistance(candidates, fromAngles);
             int prefixCount = accumulatedPath.Count;
@@ -1350,9 +1476,9 @@ namespace RobotIK
             {
                 var segment = new List<float[]>();
                 if (!TryBuildGridSegment(fromAngles, fromPosition, fromRotation,
-                        candidates[i], pose.position, targetRotation, segment)) continue;
+                        candidates[i], targetPosition, targetRotation, segment)) continue;
                 for (int p = 1; p < segment.Count; p++) accumulatedPath.Add(segment[p]);
-                if (TryBuildGridTail(candidates[i], pose.position, targetRotation,
+                if (TryBuildGridTail(candidates[i], targetPosition, targetRotation,
                         poses, poseSolutions, stageIndex + 1, accumulatedPath, defaultRotation)) return true;
                 accumulatedPath.RemoveRange(prefixCount, accumulatedPath.Count - prefixCount);
             }
@@ -1391,14 +1517,14 @@ namespace RobotIK
             List<float[]> candidates = poseSolutions[stageIndex];
             SortByDistance(candidates, fromAngles);
             int prefixCount = accumulatedPath.Count;
-            Quaternion targetRotation = useMarkerOrientations ? pose.rotation : defaultRotation;
+            GetPlanningPose(pose, defaultRotation, out Vector3 targetPosition, out Quaternion targetRotation);
             for (int i = 0; i < candidates.Count; i++)
             {
                 var segment = new List<float[]>();
                 if (!TryBuildCartesianArc(fromAngles, fromPosition, fromRotation,
-                        candidates[i], pose.position, targetRotation, segment)) continue;
+                        candidates[i], targetPosition, targetRotation, segment)) continue;
                 for (int p = 1; p < segment.Count; p++) accumulatedPath.Add(segment[p]);
-                if (TryBuildCartesianTail(candidates[i], pose.position, targetRotation,
+                if (TryBuildCartesianTail(candidates[i], targetPosition, targetRotation,
                         poses, poseSolutions, stageIndex + 1, accumulatedPath, defaultRotation)) return true;
                 accumulatedPath.RemoveRange(prefixCount, accumulatedPath.Count - prefixCount);
             }
@@ -1468,16 +1594,18 @@ namespace RobotIK
                 Quaternion preferredRotation = GetCurrentTcp().rotation;
                 Quaternion startRotation = useMarkerOrientations ? startPose.rotation : preferredRotation;
                 Quaternion goalRotation = useMarkerOrientations ? endTarget.rotation : preferredRotation;
-                plannedGoalPosition = endTarget.position;
-                plannedGoalRotation = goalRotation;
-                if (!inverseKinematics.SolveAll(startPose.position, startRotation, out List<float[]> starts) ||
-                    !inverseKinematics.SolveAll(endTarget.position, goalRotation, out List<float[]> goals))
-                    return Fail("Start or End Target pose is unreachable by the analytic IK.");
+                InitializeGoalSelection(goalRotation);
+                if (!inverseKinematics.SolveAll(startPose.position, startRotation, out List<float[]> starts))
+                    return Fail("Start pose is unreachable by the analytic IK.");
 
                 List<float[]> validStarts = FilterPoseSolutions(starts, startPose, startRotation, out PoseCheckReport startReport);
-                List<float[]> validGoals = FilterPoseSolutions(goals, endTarget, goalRotation, out PoseCheckReport goalReport);
+                rig.SetJointAngles(originalAngles);
+                Physics.SyncTransforms();
+                List<float[]> validGoals = SolveGoalPose(plannedGoalPosition, plannedGoalRotation, false, out PoseCheckReport goalReport);
+                if (validStarts.Count > 0 && validGoals.Count == 0 && adaptiveGoal)
+                    FindAdaptiveGoal(out validGoals);
                 if (validStarts.Count == 0 || validGoals.Count == 0)
-                    return Fail($"No collision-free IK solution. {DescribePoseCheck(startPose, startReport)} {DescribePoseCheck(endTarget, goalReport)}");
+                    return Fail($"No collision-free IK solution. {DescribePoseCheck(startPose, startReport)} {DescribePoseCheck(endTarget, goalReport)}{AdaptiveGoalFailureSummary}");
 
                 if (!TryGetIntermediateWaypointSolutions(preferredRotation,
                         out List<Transform> viaPoses, out List<List<float[]>> viaSolutions, out string waypointError))
@@ -1513,7 +1641,7 @@ namespace RobotIK
                         if (TryBuildCartesianTail(validStarts[s], startPose.position, startRotation,
                                 tailPoses, tailSolutions, 0, path, preferredRotation))
                         {
-                            lastPlanSummary = $"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).";
+                            SetPlanSummary($"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
                             Status = lastPlanSummary;
                             Debug.Log($"Motion planner: {Status}", this);
                             DrawPlannedPath();
@@ -1535,7 +1663,7 @@ namespace RobotIK
                                 tailPoses, tailSolutions, 0, path, preferredRotation))
                         {
                             hasGridFailurePosition = false;
-                            lastPlanSummary = $"Plan found with 3D Grid A* after {gridRouteAttempts} route attempt(s) and {planningIterations} grid nodes expanded in {FinishPlanningTimer()} ({path.Count} waypoints).";
+                            SetPlanSummary($"Plan found with 3D Grid A* after {gridRouteAttempts} route attempt(s) and {planningIterations} grid nodes expanded in {FinishPlanningTimer()} ({path.Count} waypoints).");
                             Status = lastPlanSummary;
                             Debug.Log($"Motion planner: {Status}", this);
                             DrawPlannedPath();
@@ -1547,7 +1675,7 @@ namespace RobotIK
                     if (TryConnectSequence(validStarts[s], jointSpaceStages, 0))
                     {
                         if (!HasIntermediateWaypoints()) SimplifyPath();
-                        lastPlanSummary = $"Plan found with {GetPlannerAlgorithmLabel()} after {planningIterations} search iterations in {FinishPlanningTimer()} ({path.Count} waypoints).";
+                        SetPlanSummary($"Plan found with {GetPlannerAlgorithmLabel()} after {planningIterations} search iterations in {FinishPlanningTimer()} ({path.Count} waypoints).");
                         Status = lastPlanSummary;
                         Debug.Log($"Motion planner: {Status}", this);
                         DrawPlannedPath();
@@ -1579,6 +1707,10 @@ namespace RobotIK
 
         private List<float[]> FilterPoseSolutions(List<float[]> candidates, Transform pose,
             Quaternion targetRotation, out PoseCheckReport report)
+            => FilterPoseSolutions(candidates, pose.position, targetRotation, out report);
+
+        private List<float[]> FilterPoseSolutions(List<float[]> candidates, Vector3 targetPosition,
+            Quaternion targetRotation, out PoseCheckReport report, bool enforceAdaptiveBounds = false)
         {
             var valid = new List<float[]>();
             report = new PoseCheckReport { candidateCount = candidates.Count, bestPositionError = float.PositiveInfinity,
@@ -1588,11 +1720,14 @@ namespace RobotIK
                 if (!rig.SetJointAngles(candidates[i])) continue;
                 Physics.SyncTransforms();
                 Transform tcp = rig.ToolFrame != null ? rig.ToolFrame : rig.Joints[5];
-                float positionError = Vector3.Distance(tcp.position, pose.position);
+                float positionError = Vector3.Distance(tcp.position, targetPosition);
                 float rotationError = Quaternion.Angle(tcp.rotation, targetRotation);
                 report.bestPositionError = Mathf.Min(report.bestPositionError, positionError);
                 report.bestRotationError = Mathf.Min(report.bestRotationError, rotationError);
                 if (positionError > positionClosureTolerance || rotationError > rotationClosureToleranceDegrees) continue;
+                if (enforceAdaptiveBounds &&
+                    (Vector3.Distance(tcp.position, requestedGoalPosition) > adaptiveGoalPositionToleranceMillimeters * 0.001f + 0.00001f ||
+                     Quaternion.Angle(tcp.rotation, requestedGoalRotation) > adaptiveGoalRotationToleranceDegrees + 0.001f)) continue;
                 report.poseClosedCount++;
                 if (IsInCollision(out string collisionPair))
                 {
@@ -1605,6 +1740,106 @@ namespace RobotIK
             }
             return valid;
         }
+
+        private void InitializeGoalSelection(Quaternion rotation)
+        {
+            requestedGoalPosition = plannedGoalPosition = endTarget.position;
+            requestedGoalRotation = plannedGoalRotation = rotation;
+            adaptiveGoalUsed = false;
+            adaptiveGoalSearchAttempted = false;
+            adaptiveGoalSamplesTried = 0;
+            adaptiveGoalPositionOffsetMillimeters = 0f;
+            adaptiveGoalRotationOffsetDegrees = 0f;
+        }
+
+        private List<float[]> SolveGoalPose(Vector3 position, Quaternion rotation, bool adaptiveCandidate,
+            out PoseCheckReport report)
+        {
+            float[] restore = rig.GetJointAnglesDegrees();
+            try
+            {
+                if (!inverseKinematics.SolveAll(position, rotation, out List<float[]> solutions))
+                {
+                    report = new PoseCheckReport { bestPositionError = float.PositiveInfinity, bestRotationError = float.PositiveInfinity };
+                    return new List<float[]>();
+                }
+                // Uses exactly the same IsInCollision/clearance checks as a strict goal.
+                return FilterPoseSolutions(solutions, position, rotation, out report, adaptiveCandidate);
+            }
+            finally
+            {
+                rig.SetJointAngles(restore);
+                Physics.SyncTransforms();
+            }
+        }
+
+        private List<RobotBaseSixAxisAdaptiveGoalSearch.GoalPose> CreateAdaptiveGoalCandidates()
+        {
+            adaptiveGoalSearchAttempted = true;
+            return RobotBaseSixAxisAdaptiveGoalSearch.CreateCandidates(requestedGoalPosition, requestedGoalRotation,
+                adaptiveGoalPositionToleranceMillimeters, adaptiveGoalRotationToleranceDegrees, adaptiveGoalMaximumSamples);
+        }
+
+        private bool TryAcceptAdaptiveGoal(RobotBaseSixAxisAdaptiveGoalSearch.GoalPose candidate, out List<float[]> goals)
+        {
+            adaptiveGoalSamplesTried++;
+            goals = SolveGoalPose(candidate.Position, candidate.Rotation, true, out _);
+            if (goals.Count == 0) return false;
+            plannedGoalPosition = candidate.Position;
+            plannedGoalRotation = candidate.Rotation;
+            adaptiveGoalPositionOffsetMillimeters = candidate.PositionOffsetMillimeters;
+            adaptiveGoalRotationOffsetDegrees = candidate.RotationOffsetDegrees;
+            adaptiveGoalUsed = true;
+            return true;
+        }
+
+        private IEnumerator FindAdaptiveGoalOverFrames(Action<List<float[]>> completed)
+        {
+            var candidates = CreateAdaptiveGoalCandidates();
+            var frameTimer = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (gridSearchCancellation == null || gridSearchCancellation.IsCancellationRequested)
+                { completed(new List<float[]>()); yield break; }
+                Status = $"Adaptive Goal: testing pose {i + 1}/{candidates.Count}; minimum clearance remains {minimumObstacleClearance * 1000f:F1} mm.";
+                if (TryAcceptAdaptiveGoal(candidates[i], out List<float[]> goals))
+                { completed(goals); yield break; }
+                if (frameTimer.Elapsed.TotalMilliseconds >= 3.0)
+                {
+                    yield return null;
+                    frameTimer.Restart();
+                }
+            }
+            completed(new List<float[]>());
+        }
+
+        private bool FindAdaptiveGoal(out List<float[]> goals)
+        {
+            var candidates = CreateAdaptiveGoalCandidates();
+            for (int i = 0; i < candidates.Count; i++)
+                if (TryAcceptAdaptiveGoal(candidates[i], out goals)) return true;
+            goals = new List<float[]>();
+            return false;
+        }
+
+        private string AdaptiveGoalFailureSummary => !adaptiveGoalSearchAttempted ? string.Empty :
+            $" Adaptive goal: no valid pose in {adaptiveGoalSamplesTried} samples within {adaptiveGoalPositionToleranceMillimeters:F1} mm / " +
+            $"{adaptiveGoalRotationToleranceDegrees:F1} degrees. Required clearance remains {minimumObstacleClearance * 1000f:F1} mm.";
+
+        private void SetPlanSummary(string summary)
+        {
+            lastPlanSummary = summary + (!adaptiveGoalUsed ? string.Empty :
+                $" Adaptive goal: {adaptiveGoalPositionOffsetMillimeters:F2} mm position offset / {adaptiveGoalRotationOffsetDegrees:F2} degrees rotation " +
+                $"({adaptiveGoalSamplesTried} samples; minimum clearance {minimumObstacleClearance * 1000f:F1} mm).");
+        }
+
+        private void GetPlanningPose(Transform pose, Quaternion defaultRotation, out Vector3 position, out Quaternion rotation)
+        {
+            position = pose == endTarget ? plannedGoalPosition : pose.position;
+            rotation = pose == endTarget ? plannedGoalRotation : useMarkerOrientations ? pose.rotation : defaultRotation;
+        }
+
+        private string GoalWaypointLabel => adaptiveGoalUsed ? "B / Adaptive Goal" : "B / Goal";
 
         private string DescribePoseCheck(Transform pose, PoseCheckReport report)
         {
@@ -1622,9 +1857,7 @@ namespace RobotIK
         private bool TryConnect(float[] start, float[] goal)
         {
             if (algorithm == null) algorithm = new RobotBaseSixAxisPlannerAlgorithm(CreateAlgorithmWorld());
-            var kind = plannerAlgorithm == PlannerAlgorithm.RRTConnectFast
-                ? RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectFast
-                : RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectOptimized;
+            RobotBaseSixAxisPlannerAlgorithm.Kind kind = GetAlgorithmKind();
             if (!algorithm.TryPlan(kind, start, goal, Vector3.zero, Quaternion.identity,
                     Vector3.zero, Quaternion.identity, out RobotBaseSixAxisPlannerAlgorithm.Result result))
             {
@@ -1659,6 +1892,7 @@ namespace RobotIK
                 RouteCost = GetSegmentPlanningCost,
                 TcpTravelCost = GetTcpTravelDistance,
                 PrioritizeShortestPath = plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized,
+                Joint6TravelCostPerDegree = joint6TravelPenaltyMillimetersPerDegree * 0.001f,
                 IsCartesianPointBlocked = (point, clearance) =>
                 {
                     for (int i = 0; i < bounds.Length; i++)
@@ -1712,7 +1946,9 @@ namespace RobotIK
             {
                 float[] sample = Interpolate(from, to, (float)step / steps);
                 if (plannerAlgorithm == PlannerAlgorithm.RRTConnectFast ||
-                    plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized)
+                    plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized ||
+                    plannerAlgorithm == PlannerAlgorithm.JointSpacePrm ||
+                    plannerAlgorithm == PlannerAlgorithm.InformedRrtStar)
                 {
                     if (!IsRrtConfigurationFree(sample)) return false;
                 }
@@ -1964,7 +2200,8 @@ namespace RobotIK
 
         private float GetShortcutCost(float[] from, float[] to) =>
             plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized
-                ? GetCachedRrtTcpTravelDistance(from, to)
+                ? GetCachedRrtTcpTravelDistance(from, to) +
+                    joint6TravelPenaltyMillimetersPerDegree * 0.001f * Mathf.Abs(to[5] - from[5])
                 : GetSegmentPlanningCost(from, to);
 
         private IEnumerator ExecutePath()
@@ -2157,7 +2394,7 @@ namespace RobotIK
                 label.transform.position = waypoints[i] + Vector3.up * 0.035f;
                 bool isStart = i == 0;
                 bool isEnd = i == waypoints.Count - 1;
-                label.text = isStart ? "Path Start" : isEnd ? "B / Goal" : $"WP {i}";
+                label.text = isStart ? "Path Start" : isEnd ? GoalWaypointLabel : $"WP {i}";
                 label.color = Color.white;
                 if (label.TryGetComponent(out Renderer textRenderer)) textRenderer.sortingOrder = 1;
             }
@@ -2286,6 +2523,7 @@ namespace RobotIK
             gizmoGridFailurePosition = Vector3.zero;
             gizmoGridCellSize = Mathf.Max(0.01f, gridCellSizeMillimeters * 0.001f);
             hasGridFailurePosition = false;
+            hasGridWorkspace = false;
         }
 
         private void SetGridFailurePosition(Vector3 position)
@@ -2294,8 +2532,23 @@ namespace RobotIK
             hasGridFailurePosition = true;
         }
 
-        private void SortByDistance(List<float[]> values, float[] reference) =>
+        private void SortByDistance(List<float[]> values, float[] reference)
+        {
+            if (plannerAlgorithm == PlannerAlgorithm.RRTConnectOptimized)
+            {
+                Vector2 limit = rig.AngleLimitsDegrees[5];
+                for (int i = 0; i < values.Count; i++)
+                {
+                    float angle = values[i][5];
+                    int minimumTurn = Mathf.CeilToInt((limit.x - angle) / 360f);
+                    int maximumTurn = Mathf.FloorToInt((limit.y - angle) / 360f);
+                    if (minimumTurn > maximumTurn) continue;
+                    int turn = Mathf.Clamp(Mathf.RoundToInt((reference[5] - angle) / 360f), minimumTurn, maximumTurn);
+                    values[i][5] = angle + turn * 360f;
+                }
+            }
             values.Sort((a, b) => CompareDistance(a, b, reference));
+        }
 
         private int CompareDistance(float[] a, float[] b, float[] reference) =>
             MotionCost(a, reference).CompareTo(MotionCost(b, reference));
@@ -2339,6 +2592,17 @@ namespace RobotIK
 
         private void OnDrawGizmos()
         {
+            if (adaptiveGoalUsed)
+            {
+                Gizmos.color = new Color(1f, 0.7f, 0.1f);
+                Gizmos.DrawLine(requestedGoalPosition, plannedGoalPosition);
+                Gizmos.DrawWireSphere(plannedGoalPosition, 0.02f);
+            }
+            if (showGridOccupancyGizmos && hasGridWorkspace)
+            {
+                Gizmos.color = new Color(0.2f, 0.75f, 1f, 0.7f);
+                Gizmos.DrawWireCube(gizmoGridWorkspace.center, gizmoGridWorkspace.size);
+            }
             if (showGridOccupancyGizmos && gizmoGridCellSize > 0f && gizmoGridOccupiedCells != null)
             {
                 Gizmos.color = new Color(1f, 0.2f, 0.15f, 0.6f);
@@ -2381,7 +2645,7 @@ namespace RobotIK
 #if UNITY_EDITOR
                 UnityEditor.Handles.color = Color.white;
                 UnityEditor.Handles.Label(gizmoWaypoints[i] + Vector3.up * 0.025f,
-                    isStart ? "Path Start" : isEnd ? "B / Goal" : $"WP {i}");
+                    isStart ? "Path Start" : isEnd ? GoalWaypointLabel : $"WP {i}");
 #endif
                 if (showWaypointTcpRotations && gizmoWaypointRotations != null && i < gizmoWaypointRotations.Length)
                 {

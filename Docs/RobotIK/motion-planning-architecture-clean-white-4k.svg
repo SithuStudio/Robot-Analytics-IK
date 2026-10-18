@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160">
+<title>RobotBaseSixAxisMotionPlanner architecture — clean white 4K edition</title>
+<desc>Six plain C# planners, class inheritance, scene inputs and outputs, and the Unity main-thread and worker-search boundary. A clean white diagram with restrained blue accents.</desc>
+<defs><filter id="shadow" x="-10%" y="-20%" width="120%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.055"/></filter></defs>
+<rect width="3840" height="2160" fill="#F5F5F7"/>
+<text x="1577.5" y="72" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#6E6E73">ROBOT MOTION PLANNING  /  SYSTEM ARCHITECTURE</text>
+<text x="1342.0" y="188" font-family="Segoe UI, Arial, sans-serif" font-size="78" font-weight="600" fill="#1D1D1F">RobotBaseSixAxisMotionPlanner</text>
+<text x="1302.5" y="305" font-family="Segoe UI, Arial, sans-serif" font-size="40" font-weight="400" fill="#6E6E73">Unity controller  ·  Six plain C# planners  ·  Collision-safe robot motion</text>
+<polyline points="1920,330 1920,380" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1920,380 1908.0,356.0 1932.0,356.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<polyline points="1100,500 1280,500" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1280,500 1256.0,512.0 1256.0,488.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<polyline points="2560,500 2740,500" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="2740,500 2716.0,512.0 2716.0,488.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<text x="1149.5" y="480" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#0071E3">World</text>
+<text x="2609.5" y="480" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#0071E3">Result</text>
+<rect x="100" y="380" width="1000" height="240" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip100_380"><rect x="100" y="380" width="1000" height="240" rx="30"/></clipPath>
+<rect x="101" y="381" width="998" height="82" fill="#FAFAFC" clip-path="url(#clip100_380)"/>
+<path d="M 101 463 H 1099" stroke="#E8E8ED" stroke-width="2"/>
+<text x="311.0" y="444" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Scene inputs &amp; robot services</text>
+<circle cx="153" cy="510" r="6" fill="#0071E3"/>
+<text x="185.0" y="521" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Start / goal / via poses; rig and analytical IK</text>
+<circle cx="153" cy="576" r="6" fill="#0071E3"/>
+<text x="185.0" y="587" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Robot colliders + environment obstacles</text>
+<rect x="1280" y="380" width="1280" height="240" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip1280_380"><rect x="1280" y="380" width="1280" height="240" rx="30"/></clipPath>
+<rect x="1281" y="381" width="1278" height="82" fill="#FAFAFC" clip-path="url(#clip1280_380)"/>
+<path d="M 1281 463 H 2559" stroke="#E8E8ED" stroke-width="2"/>
+<text x="1573.5" y="444" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">RobotBaseSixAxisPlannerAlgorithm</text>
+<text x="1629.0" y="523" font-family="Segoe UI, Arial, sans-serif" font-size="38" font-weight="400" fill="#1D1D1F">Kind → CreatePlanner() → TryPlan()</text>
+<text x="1551.5" y="584" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="400" fill="#6E6E73">World: callbacks, limits, costs, progress, cancellation</text>
+<rect x="2740" y="380" width="1000" height="240" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip2740_380"><rect x="2740" y="380" width="1000" height="240" rx="30"/></clipPath>
+<rect x="2741" y="381" width="998" height="82" fill="#FAFAFC" clip-path="url(#clip2740_380)"/>
+<path d="M 2741 463 H 3739" stroke="#E8E8ED" stroke-width="2"/>
+<text x="3051.5" y="444" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Visualize &amp; execute</text>
+<circle cx="2793" cy="510" r="6" fill="#0071E3"/>
+<text x="2825.0" y="521" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">TCP path, waypoint labels, rotation gizmos</text>
+<circle cx="2793" cy="576" r="6" fill="#0071E3"/>
+<text x="2825.0" y="587" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">TCP speed, replay, travel time, planning status</text>
+<polyline points="2310,620 2310,700" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="2310,700 2298.0,676.0 2322.0,676.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<text x="2360.0" y="673" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="400" fill="#0071E3">Returns the selected concrete planner</text>
+<polyline points="1300,770 1640,770" fill="none" stroke="#A6ADB7" stroke-width="3" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polygon points="1640,770 1616.0,782.0 1616.0,758.0" fill="#F5F5F7" stroke="#A6ADB7" stroke-width="3"/>
+<text x="1423.5" y="749" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="400" fill="#0071E3">inherits</text>
+<rect x="100" y="700" width="1200" height="140" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="471.0" y="764" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">RrtConnectPlannerBase</text>
+<text x="379.5" y="811" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#6E6E73">Abstract C# · shared bidirectional tree expansion</text>
+<rect x="1640" y="700" width="2100" height="140" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="2249.0" y="764" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">RobotBaseSixAxisPlanner   [abstract C# base]</text>
+<text x="2171.0" y="813" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="400" fill="#6E6E73">Common TryPlan(), validation, sampling, joint distance, and route scoring</text>
+<polyline points="395,920 1005,920" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="700,920 700,840" fill="none" stroke="#A6ADB7" stroke-width="3" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polygon points="700,840 712.0,864.0 688.0,864.0" fill="#F5F5F7" stroke="#A6ADB7" stroke-width="3"/>
+<polyline points="395,920 395,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="1005,920 1005,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="1615,920 3445,920" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="2690,920 2690,840" fill="none" stroke="#A6ADB7" stroke-width="3" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polygon points="2690,840 2702.0,864.0 2678.0,864.0" fill="#F5F5F7" stroke="#A6ADB7" stroke-width="3"/>
+<polyline points="1615,920 1615,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="2225,920 2225,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="2835,920 2835,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<polyline points="3445,920 3445,1000" fill="none" stroke="#A6ADB7" stroke-width="4" stroke-linejoin="round" stroke-dasharray="16 12"/>
+<rect x="100" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip100_1000"><rect x="100" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="101" y="1001" width="588" height="102" fill="#FAFAFC" clip-path="url(#clip100_1000)"/>
+<path d="M 101 1103 H 689" stroke="#E8E8ED" stroke-width="2"/>
+<text x="221.0" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Fast RRT-Connect</text>
+<text x="206.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">FastRrtConnectPlanner</text>
+<circle cx="143" cy="1235" r="6" fill="#0071E3"/>
+<text x="175.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">First collision-free route</text>
+<circle cx="143" cy="1300" r="6" fill="#0071E3"/>
+<text x="175.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Bidirectional joint trees</text>
+<circle cx="143" cy="1365" r="6" fill="#0071E3"/>
+<text x="175.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Swept collision checks</text>
+<rect x="138" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="282.0" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">WORKER SEARCH</text>
+<rect x="710" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#BBD7F7" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip710_1000"><rect x="710" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="711" y="1001" width="588" height="102" fill="#EFF6FF" clip-path="url(#clip710_1000)"/>
+<path d="M 711 1103 H 1299" stroke="#E8E8ED" stroke-width="2"/>
+<text x="768.5" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Optimized RRT-Connect</text>
+<text x="771.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">OptimizedRrtConnectPlanner</text>
+<circle cx="753" cy="1235" r="6" fill="#0071E3"/>
+<text x="785.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Compare route candidates</text>
+<circle cx="753" cy="1300" r="6" fill="#0071E3"/>
+<text x="785.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">TCP distance + J6 penalty</text>
+<circle cx="753" cy="1365" r="6" fill="#0071E3"/>
+<text x="785.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Safe tool-roll refinement</text>
+<rect x="748" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#BBD7F7" stroke-width="2" filter="url(#shadow)"/>
+<text x="892.0" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">WORKER SEARCH</text>
+<rect x="1320" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip1320_1000"><rect x="1320" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="1321" y="1001" width="588" height="102" fill="#FAFAFC" clip-path="url(#clip1320_1000)"/>
+<path d="M 1321 1103 H 1909" stroke="#E8E8ED" stroke-width="2"/>
+<text x="1486.0" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Cartesian Arc</text>
+<text x="1444.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">CartesianArcPlanner</text>
+<circle cx="1363" cy="1235" r="6" fill="#0071E3"/>
+<text x="1395.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Sample candidate TCP arcs</text>
+<circle cx="1363" cy="1300" r="6" fill="#0071E3"/>
+<text x="1395.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Solve IK along each arc</text>
+<circle cx="1363" cy="1365" r="6" fill="#0071E3"/>
+<text x="1395.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Check robot collisions</text>
+<rect x="1358" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="1520.5" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">MAIN THREAD</text>
+<rect x="1930" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip1930_1000"><rect x="1930" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="1931" y="1001" width="588" height="102" fill="#FAFAFC" clip-path="url(#clip1930_1000)"/>
+<path d="M 1931 1103 H 2519" stroke="#E8E8ED" stroke-width="2"/>
+<text x="2120.0" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">3D Grid A*</text>
+<text x="2081.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">GridAStarPlanner</text>
+<circle cx="1973" cy="1235" r="6" fill="#0071E3"/>
+<text x="2005.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Build voxel occupancy map</text>
+<circle cx="1973" cy="1300" r="6" fill="#0071E3"/>
+<text x="2005.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">A* through available cells</text>
+<circle cx="1973" cy="1365" r="6" fill="#0071E3"/>
+<text x="2005.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Validate IK + robot path</text>
+<rect x="1968" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="2113.5" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">WORKER + MAIN</text>
+<rect x="2540" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip2540_1000"><rect x="2540" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="2541" y="1001" width="588" height="102" fill="#FAFAFC" clip-path="url(#clip2540_1000)"/>
+<path d="M 2541 1103 H 3129" stroke="#E8E8ED" stroke-width="2"/>
+<text x="2670.0" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Joint-Space PRM</text>
+<text x="2655.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">JointSpacePrmPlanner</text>
+<circle cx="2583" cy="1235" r="6" fill="#0071E3"/>
+<text x="2615.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Sample joint configurations</text>
+<circle cx="2583" cy="1300" r="6" fill="#0071E3"/>
+<text x="2615.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Connect a safe roadmap</text>
+<circle cx="2583" cy="1365" r="6" fill="#0071E3"/>
+<text x="2615.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Dijkstra + path shortcuts</text>
+<rect x="2578" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<text x="2722.0" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">WORKER SEARCH</text>
+<rect x="3150" y="1000" width="590" height="510" rx="30" fill="#FFFFFF" stroke="#BBD7F7" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip3150_1000"><rect x="3150" y="1000" width="590" height="510" rx="30"/></clipPath>
+<rect x="3151" y="1001" width="588" height="102" fill="#EFF6FF" clip-path="url(#clip3150_1000)"/>
+<path d="M 3151 1103 H 3739" stroke="#E8E8ED" stroke-width="2"/>
+<text x="3299.5" y="1073" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="600" fill="#1D1D1F">Informed RRT*</text>
+<text x="3247.0" y="1156" font-family="Consolas, monospace" font-size="32" font-weight="400" fill="#6E6E73">InformedRrtStarPlanner</text>
+<circle cx="3193" cy="1235" r="6" fill="#0071E3"/>
+<text x="3225.0" y="1246" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Choose lower-cost parents</text>
+<circle cx="3193" cy="1300" r="6" fill="#0071E3"/>
+<text x="3225.0" y="1311" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Rewire the joint tree</text>
+<circle cx="3193" cy="1365" r="6" fill="#0071E3"/>
+<text x="3225.0" y="1376" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Informed ellipsoid sampling</text>
+<rect x="3188" y="1435" width="514" height="48" rx="15" fill="#FFFFFF" stroke="#BBD7F7" stroke-width="2" filter="url(#shadow)"/>
+<text x="3332.0" y="1470" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#0071E3">WORKER SEARCH</text>
+<text x="1287.0" y="1587" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="400" fill="#6E6E73">Solid arrows: control / data flow     •     Dashed connectors + hollow triangles: inheritance</text>
+<text x="100.0" y="1658" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="600" fill="#6E6E73">CURRENT RUNTIME THREADING</text>
+<polyline points="1260,1824 1340,1824" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1340,1824 1316.0,1836.0 1316.0,1812.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<polygon points="1260,1824 1284.0,1812.0 1284.0,1836.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<polyline points="2500,1824 2580,1824" fill="none" stroke="#0071E3" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="2580,1824 2556.0,1836.0 2556.0,1812.0" fill="#0071E3" stroke="#0071E3" stroke-width="3"/>
+<rect x="100" y="1690" width="1160" height="310" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip100_1690"><rect x="100" y="1690" width="1160" height="310" rx="30"/></clipPath>
+<rect x="101" y="1691" width="1158" height="87" fill="#FAFAFC" clip-path="url(#clip100_1690)"/>
+<path d="M 101 1778 H 1259" stroke="#E8E8ED" stroke-width="2"/>
+<text x="491.0" y="1757" font-family="Segoe UI, Arial, sans-serif" font-size="46" font-weight="600" fill="#1D1D1F">Unity main thread</text>
+<circle cx="156" cy="1828" r="6" fill="#0071E3"/>
+<text x="188.0" y="1839" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">IK, rig transforms, Physics, and minimum clearance</text>
+<circle cx="156" cy="1895" r="6" fill="#0071E3"/>
+<text x="188.0" y="1906" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Cartesian Arc; path display, labels, and playback</text>
+<text x="352.0" y="1972" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#6E6E73">The controller owns scene access and scheduling.</text>
+<rect x="1340" y="1690" width="1160" height="310" rx="30" fill="#FFFFFF" stroke="#BBD7F7" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip1340_1690"><rect x="1340" y="1690" width="1160" height="310" rx="30"/></clipPath>
+<rect x="1341" y="1691" width="1158" height="87" fill="#EFF6FF" clip-path="url(#clip1340_1690)"/>
+<path d="M 1341 1778 H 2499" stroke="#E8E8ED" stroke-width="2"/>
+<text x="1748.0" y="1757" font-family="Segoe UI, Arial, sans-serif" font-size="46" font-weight="600" fill="#1D1D1F">Worker searches</text>
+<circle cx="1396" cy="1828" r="6" fill="#0071E3"/>
+<text x="1428.0" y="1839" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Fast / Optimized RRT-Connect, PRM, Informed RRT*</text>
+<circle cx="1396" cy="1895" r="6" fill="#0071E3"/>
+<text x="1428.0" y="1906" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">GridAStarPlanner.SearchSnapshot(): occupancy A*</text>
+<text x="1573.0" y="1972" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#6E6E73">Joint-space workers request Unity queries via World.</text>
+<rect x="2580" y="1690" width="1160" height="310" rx="30" fill="#FFFFFF" stroke="#DCDCE1" stroke-width="2" filter="url(#shadow)"/>
+<clipPath id="clip2580_1690"><rect x="2580" y="1690" width="1160" height="310" rx="30"/></clipPath>
+<rect x="2581" y="1691" width="1158" height="87" fill="#FAFAFC" clip-path="url(#clip2580_1690)"/>
+<path d="M 2581 1778 H 3739" stroke="#E8E8ED" stroke-width="2"/>
+<text x="2928.5" y="1757" font-family="Segoe UI, Arial, sans-serif" font-size="46" font-weight="600" fill="#1D1D1F">Safe handoff &amp; results</text>
+<circle cx="2636" cy="1828" r="6" fill="#0071E3"/>
+<text x="2668.0" y="1839" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">World callbacks → queued main-thread requests</text>
+<circle cx="2636" cy="1895" r="6" fill="#0071E3"/>
+<text x="2668.0" y="1906" font-family="Segoe UI, Arial, sans-serif" font-size="33" font-weight="400" fill="#1D1D1F">Grid route → IK + robot validation → retry / accept</text>
+<text x="2791.5" y="1972" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="400" fill="#6E6E73">Update() services the queue; accepted paths can replay.</text>
+<text x="1325.0" y="2095" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="400" fill="#6E6E73">Six reusable C# planner classes   ·   Current source architecture   ·   4K / 3840 × 2160</text>
+</svg>

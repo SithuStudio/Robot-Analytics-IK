@@ -39,7 +39,7 @@ namespace RobotIK.Editor
             using (new EditorGUI.DisabledScope(true))
             {
                 if (plannerTarget.IsRrtSearchInProgress)
-                    EditorGUILayout.IntField("Current RRT Iteration",
+                    EditorGUILayout.IntField("Current Search Iteration",
                         plannerTarget.CurrentRrtSearchIterations);
                 EditorGUILayout.IntField(plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.GridAStar
                     ? "Grid Nodes Expanded" : "Planning Iterations", plannerTarget.PlanningIterations);
@@ -49,6 +49,13 @@ namespace RobotIK.Editor
                     EditorGUILayout.IntField("Cartesian Arc Attempts", plannerTarget.CartesianArcAttempts);
                 EditorGUILayout.FloatField("Planning Time (s)", plannerTarget.PlanningTimeSeconds);
                 EditorGUILayout.FloatField("Estimated Travel Time (s)", plannerTarget.EstimatedTravelTimeSeconds);
+                if (plannerTarget.AdaptiveGoalEnabled || plannerTarget.UsedAdaptiveGoal)
+                {
+                    EditorGUILayout.Toggle("Adaptive Goal Used", plannerTarget.UsedAdaptiveGoal);
+                    EditorGUILayout.IntField("Adaptive Goal Samples Tried", plannerTarget.AdaptiveGoalSamplesTried);
+                    EditorGUILayout.FloatField("Goal Position Offset (mm)", plannerTarget.AdaptiveGoalPositionOffsetMillimeters);
+                    EditorGUILayout.FloatField("Goal Rotation Offset (degrees)", plannerTarget.AdaptiveGoalRotationOffsetDegrees);
+                }
             }
 
             using (new EditorGUI.DisabledScope(!Application.isPlaying))

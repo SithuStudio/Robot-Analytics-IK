@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="2180" viewBox="0 0 2400 2180">
+<title>Robot motion planning: current class architecture and execution threads</title>
+<desc>Unity controller calls a compatibility dispatcher. Six concrete planners inherit a shared plain C# base; Fast and Optimized RRT-Connect also inherit a shared tree engine. Four joint-space searches and grid snapshot search use workers. Unity scene queries, grid robot validation, Cartesian Arc, visualization, and execution use the main thread.</desc>
+<rect width="2400" height="2180" fill="#F5F7FB"/>
+<text x="80" y="107" font-family="Segoe UI, Arial, sans-serif" font-size="54" font-weight="600" fill="#15273F">Robot motion planning</text>
+<text x="80" y="152" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="400" fill="#55677D">Current C# architecture · controller, six algorithms, and execution threads</text>
+<text x="80" y="227" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="600" fill="#2864D9">01   CLASS STRUCTURE</text>
+<polyline points="820,340 920,340" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="920,340 904.0,348.0 904.0,332.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="839" y="325" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="400" fill="#2864D9">calls</text>
+<polyline points="450,410 450,460" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="450,460 442.0,444.0 458.0,444.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<polyline points="820,545 1280,545" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1280,545 1264.0,553.0 1264.0,537.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="870" y="528" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="400" fill="#2864D9">injected context</text>
+<polyline points="1640,410 1640,460" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1640,460 1632.0,444.0 1648.0,444.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="1690" y="442" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="400" fill="#2864D9">returns a concrete planner as the base type</text>
+<polyline points="1620,1160 1620,585" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polygon points="1620,585 1628.0,601.0 1612.0,601.0" fill="#F5F7FB" stroke="#71839A" stroke-width="2"/>
+<polyline points="1680,725 1620,725" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="1680,870 1620,870" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="1680,1015 1620,1015" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="1680,1160 1620,1160" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="1560,700 1620,700" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="875,700 875,1015" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="875,700 920,700" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polygon points="920,700 904.0,708.0 904.0,692.0" fill="#F5F7FB" stroke="#71839A" stroke-width="2"/>
+<polyline points="920,870 875,870" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polyline points="920,1015 875,1015" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<rect x="80" y="270" width="740" height="140" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="81" y="271" width="7" height="138" rx="3" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="105" y="305" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#2864D9">UNITY COMPONENT · MonoBehaviour</text>
+<text x="105" y="337" font-family="Consolas, monospace" font-size="30" font-weight="600" fill="#15273F">RobotBaseSixAxisMotionPlanner</text>
+<text x="105" y="381" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Inspector, scene orchestration, scheduling, playback</text>
+<rect x="920" y="270" width="1400" height="140" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="921" y="271" width="7" height="138" rx="3" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="945" y="305" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#2864D9">PLAIN C# · dispatcher + shared data types</text>
+<text x="945" y="340" font-family="Consolas, monospace" font-size="34" font-weight="600" fill="#15273F">RobotBaseSixAxisPlannerAlgorithm</text>
+<text x="945" y="381" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Kind → CreatePlanner() → concrete TryPlan(); existing callers use this entry point.</text>
+<rect x="80" y="460" width="740" height="170" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="81" y="461" width="7" height="168" rx="3" fill="#0D8378" stroke="#0D8378" stroke-width="2"/>
+<text x="105" y="495" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#0D8378">SHARED INPUT · nested type of the dispatcher</text>
+<text x="105" y="527" font-family="Consolas, monospace" font-size="30" font-weight="600" fill="#15273F">World</text>
+<text x="105" y="571" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Collision / IK / FK callbacks; joint limits and costs</text>
+<text x="105" y="600" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Search settings, progress callback, cancellation</text>
+<rect x="80" y="675" width="740" height="140" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="81" y="676" width="7" height="138" rx="3" fill="#0D8378" stroke="#0D8378" stroke-width="2"/>
+<text x="105" y="710" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#0D8378">SHARED OUTPUT · returned to the controller</text>
+<text x="105" y="740" font-family="Consolas, monospace" font-size="28" font-weight="600" fill="#15273F">Result + GridSearchResult</text>
+<text x="105" y="786" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Joint path / TCP route; iterations, failure details</text>
+<rect x="80" y="860" width="740" height="185" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="81" y="861" width="7" height="183" rx="3" fill="#AD641D" stroke="#AD641D" stroke-width="2"/>
+<text x="105" y="895" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#AD641D">CONTROLLER-SUPPLIED UNITY QUERIES</text>
+<text x="105" y="927" font-family="Consolas, monospace" font-size="30" font-weight="600" fill="#15273F">Scene services</text>
+<text x="105" y="971" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">RobotBaseSixAxisRig · RobotBaseSixAxisAnalyticIK</text>
+<text x="105" y="1000" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Robot colliders · environment obstacle colliders</text>
+<text x="105" y="1029" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Transforms, Physics.SyncTransforms(), clearance</text>
+<rect x="1280" y="460" width="720" height="125" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="1281" y="461" width="7" height="123" rx="3" fill="#0D8378" stroke="#0D8378" stroke-width="2"/>
+<text x="1305" y="495" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#0D8378">ABSTRACT C# BASE · all six planners</text>
+<text x="1305" y="526" font-family="Consolas, monospace" font-size="29" font-weight="600" fill="#15273F">RobotBaseSixAxisPlanner</text>
+<text x="1305" y="571" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">TryPlan(), validation, sampling, path costs</text>
+<rect x="920" y="650" width="640" height="100" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="921" y="651" width="7" height="98" rx="3" fill="#0D8378" stroke="#0D8378" stroke-width="2"/>
+<text x="945" y="685" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#0D8378">ABSTRACT C# BASE · shared tree expansion</text>
+<text x="945" y="715" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">RrtConnectPlannerBase</text>
+<rect x="920" y="805" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="921" y="806" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="945" y="840" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · first safe joint route</text>
+<text x="945" y="870" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">FastRrtConnectPlanner</text>
+<text x="945" y="916" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Stops at the first valid connection</text>
+<rect x="920" y="950" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="921" y="951" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="945" y="985" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · compare and refine joint routes</text>
+<text x="945" y="1015" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">OptimizedRrtConnectPlanner</text>
+<text x="945" y="1061" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">TCP travel + J6 penalty; safe roll refinement</text>
+<rect x="1680" y="660" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="1681" y="661" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="1705" y="695" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · Cartesian occupancy search</text>
+<text x="1705" y="725" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">GridAStarPlanner</text>
+<text x="1705" y="771" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">A* / SearchSnapshot(); IK route validation</text>
+<rect x="1680" y="805" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="1681" y="806" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="1705" y="840" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · sampled TCP arc search</text>
+<text x="1705" y="870" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">CartesianArcPlanner</text>
+<text x="1705" y="916" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">IK branches + swept joint collision checks</text>
+<rect x="1680" y="950" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="1681" y="951" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="1705" y="985" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · sampled joint roadmap</text>
+<text x="1705" y="1015" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">JointSpacePrmPlanner</text>
+<text x="1705" y="1061" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Safe graph edges → Dijkstra → shortcuts</text>
+<rect x="1680" y="1095" width="640" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<rect x="1681" y="1096" width="7" height="128" rx="3" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<text x="1705" y="1130" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600" fill="#7651BD">CONCRETE · joint-space optimization</text>
+<text x="1705" y="1160" font-family="Consolas, monospace" font-size="27" font-weight="600" fill="#15273F">InformedRrtStarPlanner</text>
+<text x="1705" y="1206" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Rewiring + informed ellipsoid sampling</text>
+<text x="80" y="1117" font-family="Segoe UI, Arial, sans-serif" font-size="25" font-weight="600" fill="#15273F">Instantiate any concrete planner with World.</text>
+<text x="80" y="1154" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">All six are ordinary C# classes; no GameObject is required.</text>
+<polyline points="90,1190 190,1190" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="190,1190 174.0,1198.0 174.0,1182.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<text x="210" y="1197" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="400" fill="#55677D">Call / dependency</text>
+<polyline points="475,1190 575,1190" fill="none" stroke="#71839A" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polygon points="575,1190 559.0,1198.0 559.0,1182.0" fill="#F5F7FB" stroke="#71839A" stroke-width="2"/>
+<text x="595" y="1197" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="400" fill="#55677D">Inherits from</text>
+<polyline points="80,1285 2320,1285" fill="none" stroke="#D4DFEC" stroke-width="2" stroke-linejoin="round"/>
+<text x="80" y="1345" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="600" fill="#2864D9">02   CURRENT EXECUTION &amp; THREAD BOUNDARY</text>
+<text x="80" y="1395" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#AD641D">UNITY MAIN THREAD · prepare / query</text>
+<text x="850" y="1395" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#7651BD">WORKER THREAD · search</text>
+<text x="1620" y="1395" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#AD641D">UNITY MAIN THREAD · validate / use</text>
+<polyline points="780,1478 850,1478" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="850,1478 834.0,1486.0 834.0,1470.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<polyline points="1550,1478 1620,1478" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1620,1478 1604.0,1486.0 1604.0,1470.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<polyline points="1200,1535 1200,1580" fill="none" stroke="#7651BD" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1200,1580 1192.0,1564.0 1208.0,1564.0" fill="#7651BD" stroke="#7651BD" stroke-width="2"/>
+<polyline points="850,1638 780,1638" fill="none" stroke="#AD641D" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="780,1638 796.0,1630.0 796.0,1646.0" fill="#AD641D" stroke="#AD641D" stroke-width="2"/>
+<polygon points="850,1638 834.0,1646.0 834.0,1630.0" fill="#AD641D" stroke="#AD641D" stroke-width="2"/>
+<rect x="80" y="1420" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="105" y="1467" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Prepare robot problem</text>
+<text x="105" y="1503" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Start / goal / via poses → valid IK branches</text>
+<text x="105" y="1532" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Copy joint limits; cache colliders; create World</text>
+<rect x="850" y="1420" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="875" y="1467" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#7651BD">Joint-space search · Task.Run()</text>
+<text x="875" y="1503" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Fast / Optimized RRT-Connect, PRM, Informed RRT*</text>
+<text x="875" y="1532" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Controller dispatches to the selected C# class</text>
+<rect x="1620" y="1420" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="1645" y="1467" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Consume the accepted joint path</text>
+<text x="1645" y="1503" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Safe simplification → gizmos / labels → playback</text>
+<text x="1645" y="1532" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">TCP speed, replay, travel time, iteration status</text>
+<rect x="80" y="1580" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="105" y="1627" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Update() services Unity query requests</text>
+<text x="105" y="1663" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Rig angles, Physics, collider separation, FK</text>
+<text x="105" y="1692" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Scene access runs here; request results go back</text>
+<rect x="850" y="1580" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="875" y="1627" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#7651BD">World callbacks → queued requests</text>
+<text x="875" y="1663" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Worker waits for each required scene-query result</text>
+<text x="875" y="1692" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Search loop resumes after the main-thread answer</text>
+<text x="1660" y="1630" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Progress + cancellation are carried by World.</text>
+<text x="1660" y="1666" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Returned Result includes the saved joint path.</text>
+<polyline points="780,1793 850,1793" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="850,1793 834.0,1801.0 834.0,1785.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<polyline points="1550,1793 1620,1793" fill="none" stroke="#2864D9" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1620,1793 1604.0,1801.0 1604.0,1785.0" fill="#2864D9" stroke="#2864D9" stroke-width="2"/>
+<rect x="80" y="1735" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="105" y="1782" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Grid A*: capture a value snapshot</text>
+<text x="105" y="1818" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Workspace cube + inflated obstacle bounds</text>
+<text x="105" y="1847" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Grid cell size, start / goal, forbidden cells</text>
+<rect x="850" y="1735" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="875" y="1782" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#7651BD">GridAStarPlanner.SearchSnapshot()</text>
+<text x="875" y="1818" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Build occupancy map → A* → TCP route</text>
+<text x="875" y="1847" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Static entry uses copied data only</text>
+<rect x="1620" y="1735" width="700" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="1645" y="1782" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Validate the complete robot route</text>
+<text x="1645" y="1818" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">TryValidateGridPoints(): IK + robot collision checks</text>
+<text x="1645" y="1847" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Accept joint path, or reject and request another route</text>
+<polyline points="1970,1865 1970,1889 1200,1889 1200,1865" fill="none" stroke="#AD641D" stroke-width="3" stroke-linejoin="round" stroke-dasharray="8 7"/>
+<polygon points="1200,1865 1208.0,1881.0 1192.0,1881.0" fill="#AD641D" stroke="#AD641D" stroke-width="2"/>
+<text x="1325" y="1923" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="400" fill="#AD641D">Rejected grid route → forbid a cell → retry</text>
+<rect x="80" y="1960" width="2240" height="130" rx="16" fill="#FFFFFF" stroke="#D4DFEC" stroke-width="2"/>
+<text x="105" y="2007" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="600" fill="#AD641D">Cartesian Arc · currently runs on the Unity main thread</text>
+<text x="105" y="2043" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">Controller → dispatcher → CartesianArcPlanner: arc sampling, IK, and collider callbacks execute synchronously.</text>
+<text x="105" y="2072" font-family="Segoe UI, Arial, sans-serif" font-size="23" font-weight="400" fill="#55677D">The planner classes execute on their caller’s thread; the controller supplies the runtime scheduling.</text>
+<text x="80" y="2134" font-family="Segoe UI, Arial, sans-serif" font-size="21" font-weight="400" fill="#55677D">Source: Assets/RobotIK/RobotBaseSixAxisMotionPlanner.cs, RobotBaseSixAxisPlannerAlgorithm.cs, and Planners/*.cs</text>
+</svg>
