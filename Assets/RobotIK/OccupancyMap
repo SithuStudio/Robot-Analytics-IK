@@ -1,0 +1,146 @@
+using UnityEngine;
+
+public class GridOccupancyScanner : MonoBehaviour
+{
+    [Header("Scan volume")]
+    [Min(0.05f)] public float voxelSize = 0.5f;
+    public Vector3 scanSize = new Vector3(10f, 5f, 10f);
+    public LayerMask obstacleLayers = Physics.DefaultRaycastLayers;
+        
+    [Header("Display")]
+    public bool drawGrid = true;
+    [Range(0.5f, 1f)] public float gizmoCellScale = 0.9f;
+    public Color OccupiedArea = Color.red;
+    public Color FreeArea = Color.cyan;
+
+    private bool[,,] occupied;
+    private int countX;
+    private int countY;
+    private int countZ;
+    private bool hasScanned;
+
+    // Select the component's menu in the Inspector and choose "Scan Once".
+    // You can also call this method from a UI Button or another script.
+    [ContextMenu("Scan Once")]
+    public void ScanOnce()
+    {
+        if (voxelSize <= 0f)
+        {
+            Debug.LogError("Voxel Size must be greater than zero.", this);
+            return;
+        }
+
+        countX = Mathf.CeilToInt(scanSize.x / voxelSize);
+        countY = Mathf.CeilToInt(scanSize.y / voxelSize);
+        countZ = Mathf.CeilToInt(scanSize.z / voxelSize);
+
+        occupied = new bool[countX, countY, countZ];
+
+        for (int x = 0; x < countX; x++)
+        {
+            for (int y = 0; y < countY; y++)
+            {
+                for (int z = 0; z < countZ; z++)
+                {
+                    GetCell(x, y, z, out Vector3 center, out Vector3 size);
+
+                    // Slightly shrink each test box to reduce overlap at cell edges.
+                    Vector3 halfExtents = size * 0.49f;
+
+                    occupied[x, y, z] = Physics.CheckBox(
+                        center,
+                        halfExtents,
+                        transform.rotation,
+                        obstacleLayers,
+                        QueryTriggerInteraction.Ignore
+                    );
+                }
+            }
+        }
+
+        hasScanned = true;
+        Debug.Log($"Occupancy scan complete: {countX} x {countY} x {countZ} cells.", this);
+    }
+
+    public bool IsOccupied(Vector3 worldPosition)
+    {
+        if (!hasScanned)
+            return false;
+
+        Vector3 localPosition = transform.InverseTransformPoint(worldPosition);
+        Vector3 localMin = -scanSize * 0.5f;
+
+        int x = Mathf.FloorToInt((localPosition.x - localMin.x) / voxelSize);
+        int y = Mathf.FloorToInt((localPosition.y - localMin.y) / voxelSize);
+        int z = Mathf.FloorToInt((localPosition.z - localMin.z) / voxelSize);
+
+        if (x < 0 || x >= countX ||
+            y < 0 || y >= countY ||
+            z < 0 || z >= countZ)
+        {
+            return false; // Outside the scan volume.
+        }
+
+        return occupied[x, y, z];
+    }
+
+    public void ClearMap()
+    {
+        occupied = null;
+        hasScanned = false;
+    }
+
+    private void GetCell(int x, int y, int z, out Vector3 worldCenter, out Vector3 cellSize)
+    {
+        Vector3 localMin = -scanSize * 0.5f;
+
+        float startX = x * voxelSize;
+        float startY = y * voxelSize;
+        float startZ = z * voxelSize;
+
+        cellSize = new Vector3(
+            Mathf.Min(voxelSize, scanSize.x - startX),
+            Mathf.Min(voxelSize, scanSize.y - startY),
+            Mathf.Min(voxelSize, scanSize.z - startZ)
+        );
+
+        Vector3 localCenter = localMin + new Vector3(
+            startX + cellSize.x * 0.5f,
+            startY + cellSize.y * 0.5f,
+            startZ + cellSize.z * 0.5f
+        );
+
+        worldCenter = transform.TransformPoint(localCenter);
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        if (!drawGrid || !hasScanned || occupied == null)
+            return;
+
+        for (int x = 0; x < countX; x++)
+        {
+            for (int y = 0; y < countY; y++)
+            {
+                for (int z = 0; z < countZ; z++)
+                {
+                    GetCell(x, y, z, out Vector3 center, out Vector3 size);
+
+                    Gizmos.color = occupied[x, y, z]
+                        ? OccupiedArea
+                        : FreeArea;
+
+                    Gizmos.matrix = Matrix4x4.TRS(
+                        center,
+                        transform.rotation,
+                        Vector3.one
+                    );
+
+                    Gizmos.DrawCube(Vector3.zero, size * gizmoCellScale);
+                }
+            }
+        }
+
+        Gizmos.matrix = Matrix4x4.identity;
+    }
+}
