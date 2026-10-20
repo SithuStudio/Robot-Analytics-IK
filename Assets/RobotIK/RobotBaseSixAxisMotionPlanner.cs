@@ -37,6 +37,45 @@ namespace RobotIK
 
         private const int JointCount = RobotBaseSixAxisRig.JointCount;
 
+        public enum MotionState { Ready, Planning, Moving, Complete, Failed }
+        public MotionState CurrentMotionState { get; private set; }
+        public bool IsBusy => CurrentMotionState == MotionState.Planning || CurrentMotionState == MotionState.Moving;
+        public bool GameplayControlsEnabled => showGameplayControls;
+        public Transform StartPose => startPose;
+        public Transform EndTarget => endTarget;
+        public Transform ObstaclesRoot => obstaclesRoot;
+        public IReadOnlyList<Transform> IntermediateWaypoints => intermediateWaypoints;
+
+        public bool CanEditSceneObject(Transform target)
+        {
+            if (target == null || IsBusy || target == transform || target.IsChildOf(transform)) return false;
+            if (target == startPose || target == endTarget) return true;
+            if (obstaclesRoot != null && (target == obstaclesRoot || target.IsChildOf(obstaclesRoot))) return true;
+            if (intermediateWaypoints != null)
+                foreach (Transform waypoint in intermediateWaypoints) if (target == waypoint) return true;
+            return false;
+        }
+
+        /// <summary>Invalidates collision checks and saved motion after a runtime target/obstacle edit.</summary>
+        public bool NotifySceneEdited()
+        {
+            if (IsBusy) return false;
+            path.Clear();
+            ClearPathVisualization();
+            rrtCollisionCache.Clear();
+            rrtTcpTravelCache.Clear();
+            lastPlanSummary = string.Empty;
+            adaptiveGoalUsed = false;
+            ClearGridGizmoData();
+            planningIterations = 0;
+            planningTimeSeconds = 0f;
+            estimatedTravelTimeSeconds = 0f;
+            CurrentMotionState = MotionState.Ready;
+            Physics.SyncTransforms();
+            Status = "Scene updated. Reset & plan to check the new target/obstacle poses. Previous motion was cleared.";
+            return true;
+        }
+
         [SerializeField] private RobotBaseSixAxisRig rig;
         [SerializeField] private RobotBaseSixAxisAnalyticIK inverseKinematics;
         [SerializeField] private Transform startPose;
@@ -102,7 +141,7 @@ namespace RobotIK
 
         [Header("Motion Speed")]
         [Tooltip("TCP translation speed in millimeters per second, synchronized with the rotation speed limit. Accelerates at the start and decelerates at the end; no corner-speed penalty is applied.")]
-        [FormerlySerializedAs("moveSpeedDegreesPerSecond"), SerializeField, Min(1f)] private float Linear = 100f;
+        [FormerlySerializedAs("moveSpeedDegreesPerSecond"), SerializeField, Min(1f)] private float Linear = 500f;
         [Tooltip("Maximum TCP rotation speed for orientation changes, in degrees per second.")]
         [SerializeField, Min(1f)] private float RotationDegree = 75f;
         [Tooltip("TCP translation speed ramp at the start, in millimeters per second squared. Path Accuracy controls the corner geometry separately.")]
@@ -121,6 +160,8 @@ namespace RobotIK
         [SerializeField] private bool showPathAccuracyGizmos = true;
 
         [Header("Options")]
+        [Tooltip("Automatically show the floating motion control panel in the Game view during Play mode.")]
+        [SerializeField] private bool showGameplayControls = true;
         [SerializeField] private bool playOnPlan = true;
         [SerializeField] private bool planOnPlay = true;
         [SerializeField] private bool checkSelfCollision;
@@ -212,6 +253,9 @@ namespace RobotIK
         private void OnDisable()
         {
             CancelGridSearch();
+            StopAllCoroutines();
+            execution = null;
+            CurrentMotionState = MotionState.Ready;
         }
 
         private void Awake()
@@ -219,6 +263,101 @@ namespace RobotIK
             if (rig == null) rig = GetComponent<RobotBaseSixAxisRig>();
             if (inverseKinematics == null) inverseKinematics = GetComponent<RobotBaseSixAxisAnalyticIK>();
             CacheColliders();
+            if (showGameplayControls)
+            {
+                RobotMotionControls controls = GetComponent<RobotMotionControls>();
+                if (controls == null) controls = gameObject.AddComponent<RobotMotionControls>();
+                controls.Bind(this);
+            }
+        }
+
+        public MotionProfile.Settings GetMotionSettings() => new MotionProfile.Settings
+        {
+            LinearSpeed = Linear,
+            RotationSpeedDegree = RotationDegree,
+            TcpAccelerationMillimetersPerSecondSquared = AccelerationSpeed,
+            TcpDecelerationMillimetersPerSecondSquared = DecelerationSpeed,
+            TcpRotationAccelerationDegreesPerSecondSquared = RotationAcceleration,
+            TcpRotationDecelerationDegreesPerSecondSquared = RotationDeceleration,
+            PathAccuracyMillimeters = pathAccuracyMillimeters,
+            CollisionResolutionDegrees = collisionResolutionDegrees
+        };
+
+        public bool ApplyMotionSettings(MotionProfile.Settings settings)
+        {
+            if (settings == null || IsBusy) return false;
+            foreach (float value in new[] { settings.LinearSpeed,
+                settings.RotationSpeedDegree, settings.TcpAccelerationMillimetersPerSecondSquared,
+                settings.TcpDecelerationMillimetersPerSecondSquared, settings.TcpRotationAccelerationDegreesPerSecondSquared,
+                settings.TcpRotationDecelerationDegreesPerSecondSquared, settings.PathAccuracyMillimeters })
+                if (float.IsNaN(value) || float.IsInfinity(value) || value < 1f) return false;
+            Linear = settings.LinearSpeed;
+            RotationDegree = settings.RotationSpeedDegree;
+            AccelerationSpeed = settings.TcpAccelerationMillimetersPerSecondSquared;
+            DecelerationSpeed = settings.TcpDecelerationMillimetersPerSecondSquared;
+            RotationAcceleration = settings.TcpRotationAccelerationDegreesPerSecondSquared;
+            RotationDeceleration = settings.TcpRotationDecelerationDegreesPerSecondSquared;
+            pathAccuracyMillimeters = settings.PathAccuracyMillimeters;
+            RefreshMotionPreview();
+            return true;
+        }
+
+        public bool SetPlannerAlgorithm(PlannerAlgorithm value)
+        {
+            if (IsBusy || !Enum.IsDefined(typeof(PlannerAlgorithm), value)) return false;
+            plannerAlgorithm = value;
+            return true;
+        }
+
+        /// <summary>Runtime planning constraints. Distances exposed here are always millimeters.</summary>
+        public sealed class PlanningSettings
+        {
+            public float MinimumObstacleClearanceMillimeters;
+            public bool AdaptiveGoalEnabled;
+            public float PositionToleranceMillimeters;
+            public float RotationToleranceDegrees;
+            public int MaximumGoalSamples;
+        }
+
+        public PlanningSettings GetPlanningSettings() => new PlanningSettings
+        {
+            MinimumObstacleClearanceMillimeters = minimumObstacleClearance * 1000f,
+            AdaptiveGoalEnabled = adaptiveGoal,
+            PositionToleranceMillimeters = adaptiveGoalPositionToleranceMillimeters,
+            RotationToleranceDegrees = adaptiveGoalRotationToleranceDegrees,
+            MaximumGoalSamples = adaptiveGoalMaximumSamples
+        };
+
+        public bool ApplyPlanningSettings(PlanningSettings settings)
+        {
+            if (settings == null || IsBusy || settings.MaximumGoalSamples < 1 || settings.MaximumGoalSamples > 512 ||
+                settings.RotationToleranceDegrees > 180f) return false;
+            foreach (float value in new[] { settings.MinimumObstacleClearanceMillimeters,
+                settings.PositionToleranceMillimeters, settings.RotationToleranceDegrees })
+                if (float.IsNaN(value) || float.IsInfinity(value) || value < 0f) return false;
+            float clearanceMeters = settings.MinimumObstacleClearanceMillimeters * 0.001f;
+            if (minimumObstacleClearance == clearanceMeters && adaptiveGoal == settings.AdaptiveGoalEnabled &&
+                adaptiveGoalPositionToleranceMillimeters == settings.PositionToleranceMillimeters &&
+                adaptiveGoalRotationToleranceDegrees == settings.RotationToleranceDegrees &&
+                adaptiveGoalMaximumSamples == settings.MaximumGoalSamples) return true;
+            minimumObstacleClearance = clearanceMeters;
+            adaptiveGoal = settings.AdaptiveGoalEnabled;
+            adaptiveGoalPositionToleranceMillimeters = settings.PositionToleranceMillimeters;
+            adaptiveGoalRotationToleranceDegrees = settings.RotationToleranceDegrees;
+            adaptiveGoalMaximumSamples = settings.MaximumGoalSamples;
+            NotifySceneEdited();
+            Status = "Planning settings updated. Reset & plan to check the new clearance and goal limits. Previous motion was cleared.";
+            return true;
+        }
+
+        private IEnumerator RunMotionOperation(IEnumerator operation)
+        {
+            try { yield return StartCoroutine(operation); }
+            finally
+            {
+                execution = null;
+                if (IsBusy) CurrentMotionState = MotionState.Ready;
+            }
         }
 
         private void Start()
@@ -284,8 +423,9 @@ namespace RobotIK
         public void PlanAndMove()
         {
             CancelGridSearch();
-            if (execution != null) StopCoroutine(execution);
-            execution = StartCoroutine(PlanAndMoveRoutine());
+            StopAllCoroutines();
+            CurrentMotionState = MotionState.Planning;
+            execution = StartCoroutine(RunMotionOperation(PlanAndMoveRoutine()));
         }
 
         private void CancelGridSearch()
@@ -311,14 +451,15 @@ namespace RobotIK
                 return;
             }
             CancelGridSearch();
-            if (execution != null) StopCoroutine(execution);
-            execution = StartCoroutine(ReplayPlannedMotionRoutine());
+            StopAllCoroutines();
+            CurrentMotionState = MotionState.Moving;
+            execution = StartCoroutine(RunMotionOperation(ReplayPlannedMotionRoutine()));
         }
 
         /// <summary>Updates the curve and timing after Inspector edits while the robot is idle.</summary>
         public void RefreshMotionPreview()
         {
-            if (execution == null && !IsRrtSearchInProgress && path.Count > 1)
+            if (!IsBusy && !IsRrtSearchInProgress && path.Count > 1)
                 DrawPlannedPath();
         }
 
@@ -341,8 +482,9 @@ namespace RobotIK
                 return;
             }
             CancelGridSearch();
-            if (execution != null) StopCoroutine(execution);
-            execution = StartCoroutine(ResetToStartAndPlanRoutine());
+            StopAllCoroutines();
+            CurrentMotionState = MotionState.Planning;
+            execution = StartCoroutine(RunMotionOperation(ResetToStartAndPlanRoutine()));
         }
 
         private IEnumerator ResetToStartAndPlanRoutine()
@@ -1733,10 +1875,10 @@ namespace RobotIK
         public void StopMotion()
         {
             CancelGridSearch();
-            if (execution == null) return;
-            StopCoroutine(execution);
+            StopAllCoroutines();
             execution = null;
             Status = "Motion stopped.";
+            CurrentMotionState = MotionState.Ready;
         }
 
         private List<float[]> FilterPoseSolutions(List<float[]> candidates, Transform pose,
@@ -2253,8 +2395,8 @@ namespace RobotIK
                     return new Pose(tcp.position, tcp.rotation);
                 }, new MotionProfile.Settings
                 {
-                    TcpSpeedMillimetersPerSecond = Linear,
-                    TcpRotationSpeedDegreesPerSecond = RotationDegree,
+                    LinearSpeed = Linear,
+                    RotationSpeedDegree = RotationDegree,
                     TcpAccelerationMillimetersPerSecondSquared = AccelerationSpeed,
                     TcpDecelerationMillimetersPerSecondSquared = DecelerationSpeed,
                     TcpRotationAccelerationDegreesPerSecondSquared = RotationAcceleration,
@@ -2283,6 +2425,7 @@ namespace RobotIK
             DrawPlannedPath();
             MotionProfile profile = motionProfile;
             if (profile == null) { execution = null; yield break; }
+            CurrentMotionState = MotionState.Moving;
             Status = "Executing planned motion.";
             float elapsed = 0f;
             while (elapsed < profile.DurationSeconds)
@@ -2300,10 +2443,12 @@ namespace RobotIK
             {
                 Status = $"Path ended short of End Target: TCP error {finalPositionError:F3} m / {finalRotationError:F1}°. Check the final waypoint and IK closure.";
                 Debug.LogError($"Motion planner: {Status}", this);
+                CurrentMotionState = MotionState.Failed;
                 yield break;
             }
             execution = null;
             Status = string.IsNullOrEmpty(lastPlanSummary) ? "Motion complete." : $"Motion complete. {lastPlanSummary}";
+            CurrentMotionState = MotionState.Complete;
             Debug.Log($"Motion planner: {Status}", this);
         }
 
@@ -2517,6 +2662,7 @@ namespace RobotIK
 
         private bool Fail(string message)
         {
+            CurrentMotionState = MotionState.Failed;
             if (planningTimer != null && planningTimer.IsRunning)
                 message += $" Planning time: {FinishPlanningTimer()}.";
             if (plannerAlgorithm == PlannerAlgorithm.GridAStar && hasGridFailurePosition)

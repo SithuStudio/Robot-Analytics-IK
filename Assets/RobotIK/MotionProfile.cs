@@ -17,14 +17,14 @@ namespace RobotIK
         [Serializable]
         public sealed class Settings
         {
-            public float TcpSpeedMillimetersPerSecond = 100f;
-            public float TcpRotationSpeedDegreesPerSecond = 75f;
+            public float LinearSpeed = 500f;
+            public float RotationSpeedDegree = 75f;
             public float TcpAccelerationMillimetersPerSecondSquared = 200f;
             public float TcpDecelerationMillimetersPerSecondSquared = 200f;
             public float TcpRotationAccelerationDegreesPerSecondSquared = 150f;
             public float TcpRotationDecelerationDegreesPerSecondSquared = 150f;
             public float PathAccuracyMillimeters = 20f;
-            public float CollisionResolutionDegrees = 4f;
+            public float CollisionResolutionDegrees = 10f;
 
             internal Settings Copy() => (Settings)MemberwiseClone();
         }
@@ -74,7 +74,7 @@ namespace RobotIK
             this.settings = settings.Copy();
             foreach (float value in new[]
             {
-                settings.TcpSpeedMillimetersPerSecond, settings.TcpRotationSpeedDegreesPerSecond,
+                settings.LinearSpeed, settings.RotationSpeedDegree,
                 settings.TcpAccelerationMillimetersPerSecondSquared, settings.TcpDecelerationMillimetersPerSecondSquared,
                 settings.TcpRotationAccelerationDegreesPerSecondSquared, settings.TcpRotationDecelerationDegreesPerSecondSquared,
                 settings.PathAccuracyMillimeters, settings.CollisionResolutionDegrees
@@ -315,8 +315,8 @@ namespace RobotIK
             var travel = new double[samples.Length];
             var linearRates = new float[intervals];
             var angularRates = new float[intervals];
-            float linearSpeed = Mathf.Max(1f, settings.TcpSpeedMillimetersPerSecond);
-            float angularSpeed = Mathf.Max(1f, settings.TcpRotationSpeedDegreesPerSecond);
+            float linearSpeed = Mathf.Max(1f, settings.LinearSpeed);
+            float angularSpeed = Mathf.Max(1f, settings.RotationSpeedDegree);
             Vector3 previousPosition = Vector3.zero;
             Quaternion previousRotation = Quaternion.identity;
             for (int sample = 0; sample < samples.Length; sample++)

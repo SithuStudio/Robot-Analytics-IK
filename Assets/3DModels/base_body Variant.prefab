@@ -361,6 +361,10 @@ MonoBehaviour:
   intermediateWaypoints: []
   endTarget: {fileID: 0}
   useMarkerOrientations: 1
+  adaptiveGoal: 0
+  adaptiveGoalPositionToleranceMillimeters: 10
+  adaptiveGoalRotationToleranceDegrees: 10
+  adaptiveGoalMaximumSamples: 256
   obstaclesRoot: {fileID: 0}
   robotColliders:
   - {fileID: 0}
@@ -393,9 +397,16 @@ MonoBehaviour:
   maximumIterations: 200
   optimizedRrtWaypointBudget: 5
   goalBias: 0.08
-  tcpSpeedMillimetersPerSecond: 500
-  tcpRotationSpeedDegreesPerSecond: 90
   randomSeed: 0
+  Linear: 500
+  RotationDegree: 75
+  AccelerationSpeed: 200
+  DecelerationSpeed: 200
+  RotationAcceleration: 150
+  RotationDeceleration: 150
+  pathAccuracyMillimeters: 20
+  showPathAccuracyGizmos: 1
+  showGameplayControls: 1
   playOnPlan: 0
   planOnPlay: 0
   checkSelfCollision: 1
