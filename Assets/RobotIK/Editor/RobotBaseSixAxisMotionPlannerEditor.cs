@@ -16,7 +16,10 @@ namespace RobotIK.Editor
             {
                 foreach (Object item in targets)
                     if (item is RobotBaseSixAxisMotionPlanner planner)
+                    {
                         planner.ApplyRobotBoxColliderScale();
+                        planner.RefreshMotionPreview();
+                    }
             }
 
             serializedObject.Update();
@@ -30,10 +33,14 @@ namespace RobotIK.Editor
                 {
                     clearance.floatValue = Mathf.Max(0f, clearanceMillimeters) / 1000f;
                     serializedObject.ApplyModifiedProperties();
+                    if (Application.isPlaying)
+                        ((RobotBaseSixAxisMotionPlanner)target).RefreshMotionPreview();
                 }
             }
 
             RobotBaseSixAxisMotionPlanner plannerTarget = (RobotBaseSixAxisMotionPlanner)target;
+            if (plannerTarget.RetainedSharpCorners > 0)
+                EditorGUILayout.HelpBox("Some corners retain their original path because no safe smooth curve fits the accuracy setting. Adjust Path Accuracy or the waypoints to change those corners.", MessageType.Info);
             if (Application.isPlaying && plannerTarget.IsRrtSearchInProgress)
                 Repaint();
             using (new EditorGUI.DisabledScope(true))
@@ -41,14 +48,12 @@ namespace RobotIK.Editor
                 if (plannerTarget.IsRrtSearchInProgress)
                     EditorGUILayout.IntField("Current Search Iteration",
                         plannerTarget.CurrentRrtSearchIterations);
-                EditorGUILayout.IntField(plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.GridAStar
-                    ? "Grid Nodes Expanded" : "Planning Iterations", plannerTarget.PlanningIterations);
-                if (plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.GridAStar)
-                    EditorGUILayout.IntField("Grid Routes Tried", plannerTarget.GridRouteAttempts);
-                if (plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianArc)
-                    EditorGUILayout.IntField("Cartesian Arc Attempts", plannerTarget.CartesianArcAttempts);
+                // Grid and Cartesian diagnostics are hidden with their Inspector settings.
+                EditorGUILayout.IntField("Planning Iterations", plannerTarget.PlanningIterations);
                 EditorGUILayout.FloatField("Planning Time (s)", plannerTarget.PlanningTimeSeconds);
                 EditorGUILayout.FloatField("Estimated Travel Time (s)", plannerTarget.EstimatedTravelTimeSeconds);
+                EditorGUILayout.IntField("Smoothed Path Corners", plannerTarget.SmoothedPathCorners);
+                EditorGUILayout.IntField("Retained Sharp Corners", plannerTarget.RetainedSharpCorners);
                 if (plannerTarget.AdaptiveGoalEnabled || plannerTarget.UsedAdaptiveGoal)
                 {
                     EditorGUILayout.Toggle("Adaptive Goal Used", plannerTarget.UsedAdaptiveGoal);

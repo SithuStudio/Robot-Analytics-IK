@@ -40,7 +40,7 @@ namespace RobotIK
         [SerializeField] private RobotBaseSixAxisRig rig;
         [SerializeField] private RobotBaseSixAxisAnalyticIK inverseKinematics;
         [SerializeField] private Transform startPose;
-        [Tooltip("Optional ordered TCP poses visited after Start and before End Target. Add a transform here for controlled approach/repositioning.")]
+        [Tooltip("Ordered TCP targets between Start and End Target. Path Accuracy controls how closely the smoothed TCP path follows each corner.")]
         [SerializeField] private Transform[] intermediateWaypoints = Array.Empty<Transform>();
         [SerializeField] private Transform endTarget;
         [Tooltip("When disabled, A and B are position targets and the tool keeps its current world orientation.")]
@@ -64,24 +64,26 @@ namespace RobotIK
         [SerializeField, Range(0.5f, 1f)] private float robotBoxColliderScale = 0.95f;
         [SerializeField, Min(1f)] private float extensionStepDegrees = 20f;
         [SerializeField, Min(0.5f)] private float collisionResolutionDegrees = 4f;
+
+        [Header ("Motion Planning & Constraints")]
         [Tooltip("Fast stops at the first safe route. Optimized ranks routes by TCP travel distance plus the configured J6 travel penalty.")]
         [SerializeField] private PlannerAlgorithm plannerAlgorithm = PlannerAlgorithm.RRTConnectOptimized;
         [Tooltip("Voxel width for the 3D Cartesian occupancy grid, in millimeters. Smaller cells give finer routes but require more search.")]
-        [SerializeField, Min(10f)] private float gridCellSizeMillimeters = 100f;
+        [SerializeField, HideInInspector, Min(10f)] private float gridCellSizeMillimeters = 100f;
         [Tooltip("Side length in meters of the cubic 3D grid workspace. The workspace is centered on Grid Workspace Center, or halfway between Start and End Target when no center is assigned.")]
-        [SerializeField, Min(0.1f)] private float gridWorkspaceSizeMeters = 2f;
-        [SerializeField] private Transform gridWorkspaceCenter;
+        [SerializeField, HideInInspector, Min(0.1f)] private float gridWorkspaceSizeMeters = 2f;
+        [SerializeField, HideInInspector] private Transform gridWorkspaceCenter;
         [Tooltip("Inflation around obstacle bounds in the occupancy grid, in millimeters. The final route is also checked with the full robot colliders and minimum clearance.")]
-        [SerializeField, Min(0f)] private float gridObstacleInflationMillimeters = 50f;
+        [SerializeField, HideInInspector, Min(0f)] private float gridObstacleInflationMillimeters = 50f;
         [Tooltip("Maximum A* grid cells expanded for each Cartesian segment.")]
-        [SerializeField, Min(100)] private int maximumGridNodes = 20000;
+        [SerializeField, HideInInspector, Min(100)] private int maximumGridNodes = 20000;
         [Tooltip("Maximum distinct A* routes tried per Cartesian segment when IK or full robot collision checks reject a route.")]
-        [SerializeField, Range(1, 32)] private int maximumGridRouteAttempts = 8;
-        [Header("3D Grid A* Gizmos")]
-        [SerializeField] private bool showGridOccupancyGizmos = true;
-        [SerializeField] private bool showGridFailureGizmo = true;
+        [SerializeField, HideInInspector, Range(1, 32)] private int maximumGridRouteAttempts = 8;
+        // Grid/Cartesian settings remain serialized for existing scenes but are hidden in the Inspector.
+        [SerializeField, HideInInspector] private bool showGridOccupancyGizmos = true;
+        [SerializeField, HideInInspector] private bool showGridFailureGizmo = true;
         [Tooltip("Maximum occupied grid cells drawn in the Scene view.")]
-        [SerializeField, Range(100, 10000)] private int maximumGridGizmoCells = 2500;
+        [SerializeField, HideInInspector, Range(100, 10000)] private int maximumGridGizmoCells = 2500;
         [Tooltip("Penalty applied to squared J4-J6 changes when ranking branches and searching joint space. Higher values discourage unnecessary TCP wrist rotation, but can favor larger shoulder/elbow movements.")]
         [FormerlySerializedAs("j4MotionPenalty"), SerializeField, Min(1f)] private float wristMotionPenalty = 3f;
         [Tooltip("Optimized RRT-Connect adds this many millimeters of route cost for each degree of J6 travel. Increase it to discourage tool-roll detours; 0 ranks by TCP distance alone.")]
@@ -95,12 +97,30 @@ namespace RobotIK
         [Tooltip("Optimized RRT-Connect ranks collision-free routes by TCP distance plus J6 travel penalty, and keeps the displayed path near this many points, including Start and Goal. Extra points are retained when needed for collision safety.")]
         [SerializeField, Range(2, 12)] private int optimizedRrtWaypointBudget = 5;
         [SerializeField, Min(0f)] private float goalBias = 0.08f;
-        [Tooltip("Approximate TCP translation speed along the planned path, in millimeters per second.")]
-        [FormerlySerializedAs("moveSpeedDegreesPerSecond"), SerializeField, Min(1f)] private float tcpSpeedMillimetersPerSecond = 100f;
-        [Tooltip("Maximum TCP rotation speed for orientation changes, in degrees per second.")]
-        [SerializeField, Min(1f)] private float tcpRotationSpeedDegreesPerSecond = 75f;
         [Tooltip("RRT random seed. The same seed and starting joint pose produce the same plan; seed 0 uses a fixed default seed.")]
         [SerializeField] private int randomSeed = 0;
+
+        [Header("Motion Speed")]
+        [Tooltip("TCP translation speed in millimeters per second, synchronized with the rotation speed limit. Accelerates at the start and decelerates at the end; no corner-speed penalty is applied.")]
+        [FormerlySerializedAs("moveSpeedDegreesPerSecond"), SerializeField, Min(1f)] private float Linear = 100f;
+        [Tooltip("Maximum TCP rotation speed for orientation changes, in degrees per second.")]
+        [SerializeField, Min(1f)] private float RotationDegree = 75f;
+        [Tooltip("TCP translation speed ramp at the start, in millimeters per second squared. Path Accuracy controls the corner geometry separately.")]
+        [SerializeField, Min(1f)] private float AccelerationSpeed = 200f;
+        [Tooltip("TCP translation speed ramp at the end, in millimeters per second squared.")]
+        [SerializeField, Min(1f)] private float DecelerationSpeed = 200f;
+        [Tooltip("TCP angular speed ramp at the start, in degrees per second squared.")]
+        [SerializeField, Min(1f)] private float RotationAcceleration = 150f;
+        [Tooltip("TCP angular speed ramp at the end, in degrees per second squared.")]
+        [SerializeField, Min(1f)] private float RotationDeceleration = 150f;
+        [Header("Path Accuracy")]
+        [InspectorName("Path Accuracy (mm)")]
+        [Tooltip("Maximum distance from a waypoint corner for the rounded TCP section, in millimeters. Smaller values stay closer to each point; larger values permit wider turns. Minimum 1 mm, with no fixed upper limit. Start and End remain exact. Available segment length and collision checks can limit the curve size. This controls geometry, not playback speed.")]
+        [SerializeField, Range(0, 500f)] private float pathAccuracyMillimeters = 20f;
+        [Tooltip("Show accuracy boundaries and millimeter dimensions at waypoint corners in the Scene view.")]
+        [SerializeField] private bool showPathAccuracyGizmos = true;
+
+        [Header("Options")]
         [SerializeField] private bool playOnPlan = true;
         [SerializeField] private bool planOnPlay = true;
         [SerializeField] private bool checkSelfCollision;
@@ -124,6 +144,7 @@ namespace RobotIK
         private float adaptiveGoalRotationOffsetDegrees;
 
         private readonly List<float[]> path = new List<float[]>();
+        private MotionProfile motionProfile;
         [System.NonSerialized] private readonly Dictionary<BoxCollider, Vector3> originalRobotBoxSizes =
             new Dictionary<BoxCollider, Vector3>();
         private Collider[] obstacleColliders;
@@ -165,6 +186,8 @@ namespace RobotIK
         public string Status { get => status; private set => status = value; }
         public IReadOnlyList<float[]> PlannedPath => path;
         public float EstimatedTravelTimeSeconds => estimatedTravelTimeSeconds;
+        public int SmoothedPathCorners { get; private set; }
+        public int RetainedSharpCorners { get; private set; }
         [SerializeField, HideInInspector] private float estimatedTravelTimeSeconds;
         public int PlanningIterations => planningIterations;
         public int CurrentRrtSearchIterations => System.Threading.Volatile.Read(ref currentRrtSearchIterations);
@@ -242,8 +265,13 @@ namespace RobotIK
             wristMotionPenalty = Mathf.Max(1f, wristMotionPenalty);
             joint6TravelPenaltyMillimetersPerDegree = Mathf.Max(0f, joint6TravelPenaltyMillimetersPerDegree);
             robotBoxColliderScale = Mathf.Clamp(robotBoxColliderScale, 0.5f, 1f);
-            tcpSpeedMillimetersPerSecond = Mathf.Max(1f, tcpSpeedMillimetersPerSecond);
-            tcpRotationSpeedDegreesPerSecond = Mathf.Max(1f, tcpRotationSpeedDegreesPerSecond);
+            Linear = Mathf.Max(1f, Linear);
+            RotationDegree = Mathf.Max(1f, RotationDegree);
+            AccelerationSpeed = Mathf.Max(1f, AccelerationSpeed);
+            DecelerationSpeed = Mathf.Max(1f, DecelerationSpeed);
+            RotationAcceleration = Mathf.Max(1f, RotationAcceleration);
+            RotationDeceleration = Mathf.Max(1f, RotationDeceleration);
+            pathAccuracyMillimeters = Mathf.Max(1f, pathAccuracyMillimeters);
             maximumIterations = Mathf.Max(1, maximumIterations);
             adaptiveGoalPositionToleranceMillimeters = Mathf.Max(0f, adaptiveGoalPositionToleranceMillimeters);
             adaptiveGoalRotationToleranceDegrees = Mathf.Clamp(adaptiveGoalRotationToleranceDegrees, 0f, 180f);
@@ -283,9 +311,15 @@ namespace RobotIK
                 return;
             }
             CancelGridSearch();
-            UpdateEstimatedTravelTime();
             if (execution != null) StopCoroutine(execution);
             execution = StartCoroutine(ReplayPlannedMotionRoutine());
+        }
+
+        /// <summary>Updates the curve and timing after Inspector edits while the robot is idle.</summary>
+        public void RefreshMotionPreview()
+        {
+            if (execution == null && !IsRrtSearchInProgress && path.Count > 1)
+                DrawPlannedPath();
         }
 
         private IEnumerator ReplayPlannedMotionRoutine()
@@ -2204,37 +2238,60 @@ namespace RobotIK
                     joint6TravelPenaltyMillimetersPerDegree * 0.001f * Mathf.Abs(to[5] - from[5])
                 : GetSegmentPlanningCost(from, to);
 
-        private IEnumerator ExecutePath()
+        private void BuildMotionProfile()
         {
-            Status = $"Executing planned path (0/{Mathf.Max(0, path.Count - 1)} segments).";
-            if (path.Count > 0) rig.SetJointAngles(path[0]);
-            for (int waypoint = 1; waypoint < path.Count; waypoint++)
+            motionProfile = null;
+            SmoothedPathCorners = RetainedSharpCorners = 0;
+            if (path.Count < 2) return;
+            float[] restore = rig.GetJointAnglesDegrees();
+            try
             {
-                Status = $"Executing planned path ({waypoint}/{path.Count - 1} segments).";
-                float[] from = rig.GetJointAnglesDegrees();
-                float[] to = path[waypoint];
-                float[] sampleTimes = BuildTcpExecutionTimeMap(from, to);
-                float duration = Mathf.Max(0.01f, sampleTimes[sampleTimes.Length - 1]);
-                int sampleIndex = 0;
-                float elapsed = 0f;
-                while (elapsed < duration)
+                motionProfile = MotionProfile.Create(path, angles =>
                 {
-                    elapsed += Time.deltaTime;
-                    float targetTime = Mathf.Min(elapsed, duration);
-                    while (sampleIndex < sampleTimes.Length - 2 && sampleTimes[sampleIndex + 1] < targetTime)
-                        sampleIndex++;
-                    float t0 = sampleIndex / (float)(sampleTimes.Length - 1);
-                    float t1 = (sampleIndex + 1) / (float)(sampleTimes.Length - 1);
-                    float timeSpan = sampleTimes[sampleIndex + 1] - sampleTimes[sampleIndex];
-                    float fraction = timeSpan > 0.00001f
-                        ? Mathf.Clamp01((targetTime - sampleTimes[sampleIndex]) / timeSpan)
-                        : 1f;
-                    rig.SetJointAngles(Interpolate(from, to, Mathf.Lerp(t0, t1, fraction)));
-                    yield return null;
-                }
-                rig.SetJointAngles(to);
+                    if (!rig.SetJointAngles(angles)) throw new InvalidOperationException("Could not evaluate robot joint state.");
+                    Transform tcp = GetCurrentTcp();
+                    return new Pose(tcp.position, tcp.rotation);
+                }, new MotionProfile.Settings
+                {
+                    TcpSpeedMillimetersPerSecond = Linear,
+                    TcpRotationSpeedDegreesPerSecond = RotationDegree,
+                    TcpAccelerationMillimetersPerSecondSquared = AccelerationSpeed,
+                    TcpDecelerationMillimetersPerSecondSquared = DecelerationSpeed,
+                    TcpRotationAccelerationDegreesPerSecondSquared = RotationAcceleration,
+                    TcpRotationDecelerationDegreesPerSecondSquared = RotationDeceleration,
+                    PathAccuracyMillimeters = pathAccuracyMillimeters,
+                    CollisionResolutionDegrees = collisionResolutionDegrees
+                }, angles =>
+                {
+                    if (!rig.SetJointAngles(angles)) return false;
+                    Physics.SyncTransforms();
+                    return !IsInCollision();
+                });
+                SmoothedPathCorners = motionProfile.SmoothedPathCorners;
+                RetainedSharpCorners = motionProfile.RetainedSharpCorners;
+            }
+            finally
+            {
+                rig.SetJointAngles(restore);
                 Physics.SyncTransforms();
             }
+        }
+
+        private IEnumerator ExecutePath()
+        {
+            // Rebuild before replay as well: Inspector limits and obstacles may have changed.
+            DrawPlannedPath();
+            MotionProfile profile = motionProfile;
+            if (profile == null) { execution = null; yield break; }
+            Status = "Executing planned motion.";
+            float elapsed = 0f;
+            while (elapsed < profile.DurationSeconds)
+            {
+                elapsed += Time.deltaTime;
+                rig.SetJointAngles(profile.Evaluate(elapsed));
+                yield return null;
+            }
+            rig.SetJointAngles(profile.Evaluate(profile.DurationSeconds));
             Physics.SyncTransforms();
             float finalPositionError = Vector3.Distance(GetCurrentTcp().position, plannedGoalPosition);
             float finalRotationError = Quaternion.Angle(GetCurrentTcp().rotation, plannedGoalRotation);
@@ -2250,41 +2307,12 @@ namespace RobotIK
             Debug.Log($"Motion planner: {Status}", this);
         }
 
-        private float[] BuildTcpExecutionTimeMap(float[] from, float[] to)
-        {
-            int sampleCount = Mathf.Max(1, Mathf.CeilToInt(Distance(from, to) / collisionResolutionDegrees));
-            var sampleTimes = new float[sampleCount + 1];
-            float[] restore = rig.GetJointAnglesDegrees();
-            float translationSpeedMetersPerSecond = tcpSpeedMillimetersPerSecond * 0.001f;
-            Vector3 previousPosition = Vector3.zero;
-            Quaternion previousRotation = Quaternion.identity;
-            float tcpDistanceMeters = 0f;
-            float tcpRotationDegrees = 0f;
-
-            for (int sample = 0; sample <= sampleCount; sample++)
-            {
-                rig.SetJointAngles(Interpolate(from, to, sample / (float)sampleCount));
-                Transform tcp = GetCurrentTcp();
-                if (sample > 0)
-                {
-                    tcpDistanceMeters += Vector3.Distance(previousPosition, tcp.position);
-                    tcpRotationDegrees += Quaternion.Angle(previousRotation, tcp.rotation);
-                }
-                previousPosition = tcp.position;
-                previousRotation = tcp.rotation;
-                float translationTime = tcpDistanceMeters / translationSpeedMetersPerSecond;
-                float rotationTime = tcpRotationDegrees / tcpRotationSpeedDegreesPerSecond;
-                sampleTimes[sample] = Mathf.Max(translationTime, rotationTime);
-            }
-
-            rig.SetJointAngles(restore);
-            return sampleTimes;
-        }
-
         private void DrawPlannedPath()
         {
             if (path.Count < 2)
             {
+                motionProfile = null;
+                SmoothedPathCorners = RetainedSharpCorners = 0;
                 estimatedTravelTimeSeconds = 0f;
                 gizmoPath = Array.Empty<Vector3>();
                 gizmoWaypoints = Array.Empty<Vector3>();
@@ -2302,24 +2330,18 @@ namespace RobotIK
                 waypoints.Add(tcp.position);
                 waypointRotations.Add(tcp.rotation);
             }
-            for (int segment = 1; segment < path.Count; segment++)
-            {
-                float[] from = path[segment - 1];
-                float[] to = path[segment];
-                int steps = Mathf.Max(1, Mathf.CeilToInt(Distance(from, to) / collisionResolutionDegrees));
-                for (int step = segment == 1 ? 0 : 1; step <= steps; step++)
+            UpdateEstimatedTravelTime();
+            if (motionProfile != null)
+                foreach (float[] angles in motionProfile.SampleJointPath())
                 {
-                    rig.SetJointAngles(Interpolate(from, to, (float)step / steps));
-                    Transform tcp = rig.ToolFrame != null ? rig.ToolFrame : rig.Joints[5];
-                    points.Add(tcp.position);
+                    rig.SetJointAngles(angles);
+                    points.Add(GetCurrentTcp().position);
                 }
-            }
             rig.SetJointAngles(restore);
             Physics.SyncTransforms();
             gizmoPath = points.ToArray();
             gizmoWaypoints = waypoints.ToArray();
             gizmoWaypointRotations = waypointRotations.ToArray();
-            UpdateEstimatedTravelTime();
 
             if (pathRenderer == null)
             {
@@ -2343,19 +2365,8 @@ namespace RobotIK
 
         private void UpdateEstimatedTravelTime()
         {
-            if (path.Count < 2)
-            {
-                estimatedTravelTimeSeconds = 0f;
-                return;
-            }
-
-            float totalSeconds = 0f;
-            for (int i = 1; i < path.Count; i++)
-            {
-                float[] sampleTimes = BuildTcpExecutionTimeMap(path[i - 1], path[i]);
-                totalSeconds += Mathf.Max(0.01f, sampleTimes[sampleTimes.Length - 1]);
-            }
-            estimatedTravelTimeSeconds = totalSeconds;
+            BuildMotionProfile();
+            estimatedTravelTimeSeconds = motionProfile != null ? motionProfile.DurationSeconds : 0f;
         }
 
         private void UpdateWaypointLabels(List<Vector3> waypoints)
@@ -2405,6 +2416,8 @@ namespace RobotIK
 
         private void ClearPathVisualization()
         {
+            motionProfile = null;
+            SmoothedPathCorners = RetainedSharpCorners = 0;
             gizmoPath = Array.Empty<Vector3>();
             gizmoWaypoints = Array.Empty<Vector3>();
             gizmoWaypointRotations = Array.Empty<Quaternion>();
@@ -2630,6 +2643,9 @@ namespace RobotIK
                     "Grid failure area");
 #endif
             }
+#if UNITY_EDITOR
+            if (showPathAccuracyGizmos) DrawPathAccuracyGizmos();
+#endif
             if (gizmoPath == null || gizmoPath.Length < 2) return;
             Gizmos.color = Color.cyan;
             for (int i = 1; i < gizmoPath.Length; i++)
@@ -2657,6 +2673,66 @@ namespace RobotIK
                 }
             }
         }
+
+#if UNITY_EDITOR
+        private void DrawPathAccuracyGizmos()
+        {
+            if (gizmoWaypoints != null && gizmoWaypoints.Length > 2)
+            {
+                var drawn = new HashSet<Vector3>();
+                for (int i = 1; i < gizmoWaypoints.Length - 1; i++)
+                {
+                    Vector3 center = gizmoWaypoints[i];
+                    if (!drawn.Add(center)) continue;
+                    int before = i - 1, after = i + 1;
+                    while (before > 0 && (gizmoWaypoints[before] - center).sqrMagnitude < 0.00000001f) before--;
+                    while (after < gizmoWaypoints.Length - 1 && (gizmoWaypoints[after] - center).sqrMagnitude < 0.00000001f) after++;
+                    DrawPathAccuracyDimension(gizmoWaypoints[before], center, gizmoWaypoints[after]);
+                }
+                return;
+            }
+            // Show assigned targets even before a path is planned.
+            if (intermediateWaypoints == null) return;
+            var markers = new List<Transform>();
+            if (startPose != null) markers.Add(startPose);
+            foreach (Transform marker in intermediateWaypoints)
+                if (marker != null) markers.Add(marker);
+            if (endTarget != null) markers.Add(endTarget);
+            for (int i = 1; i < markers.Count - 1; i++)
+                DrawPathAccuracyDimension(markers[i - 1].position, markers[i].position, markers[i + 1].position);
+        }
+
+        private void DrawPathAccuracyDimension(Vector3 before, Vector3 center, Vector3 after)
+        {
+            Vector3 incoming = before - center, outgoing = after - center;
+            if (incoming.sqrMagnitude < 0.00000001f || outgoing.sqrMagnitude < 0.00000001f) return;
+            incoming.Normalize();
+            outgoing.Normalize();
+            if (Vector3.Dot(incoming, outgoing) < -0.9999f) return;
+            Vector3 normal = Vector3.Cross(incoming, outgoing).normalized;
+            if (normal.sqrMagnitude < 0.0001f)
+                normal = Vector3.Cross(incoming, Mathf.Abs(incoming.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
+            Vector3 direction = (incoming + outgoing).normalized;
+            if (direction.sqrMagnitude < 0.0001f) direction = Vector3.Cross(normal, incoming).normalized;
+            float accuracyMillimeters = Mathf.Max(1f, pathAccuracyMillimeters);
+            float radius = accuracyMillimeters * 0.001f;
+            Vector3 boundary = center + direction * radius;
+            float tickSize = Mathf.Min(radius * 0.15f, UnityEditor.HandleUtility.GetHandleSize(center) * 0.025f);
+            Vector3 tickDirection = Vector3.Cross(normal, direction).normalized;
+            Vector3 tick = tickDirection * tickSize;
+            Color previousColor = UnityEditor.Handles.color;
+            UnityEditor.Handles.color = new Color(1f, 0.75f, 0.1f, 0.55f);
+            UnityEditor.Handles.DrawWireDisc(center, normal, radius);
+            UnityEditor.Handles.color = new Color(1f, 0.85f, 0.2f);
+            UnityEditor.Handles.DrawLine(center, boundary);
+            UnityEditor.Handles.DrawLine(center - tick, center + tick);
+            UnityEditor.Handles.DrawLine(boundary - tick, boundary + tick);
+            Vector3 labelOffset = tickDirection * Mathf.Max(tickSize * 2f, UnityEditor.HandleUtility.GetHandleSize(center) * 0.035f);
+            UnityEditor.Handles.Label((center + boundary) * 0.5f + labelOffset,
+                $"Path accuracy: {accuracyMillimeters:0.##} mm", UnityEditor.EditorStyles.helpBox);
+            UnityEditor.Handles.color = previousColor;
+        }
+#endif
 
         private static void DrawTcpAxis(Vector3 origin, Vector3 direction, float length, Color color)
         {

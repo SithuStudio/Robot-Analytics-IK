@@ -1606,9 +1606,21 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 423456823}
     - target: {fileID: 1881795425057843601, guid: a3be78ac7c4a5024b9298822e7acdc2f, type: 3}
+      propertyPath: adaptiveGoal
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1881795425057843601, guid: a3be78ac7c4a5024b9298822e7acdc2f, type: 3}
       propertyPath: obstaclesRoot
       value: 
       objectReference: {fileID: 672420156}
+    - target: {fileID: 1881795425057843601, guid: a3be78ac7c4a5024b9298822e7acdc2f, type: 3}
+      propertyPath: enableCornerBlending
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 1881795425057843601, guid: a3be78ac7c4a5024b9298822e7acdc2f, type: 3}
+      propertyPath: pathAccuracyMillimeters
+      value: 50
+      objectReference: {fileID: 0}
     - target: {fileID: 1881795425057843601, guid: a3be78ac7c4a5024b9298822e7acdc2f, type: 3}
       propertyPath: minimumObstacleClearance
       value: 0.04
