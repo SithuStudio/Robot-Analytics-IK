@@ -211,13 +211,13 @@ namespace RobotIK
             settingsContainer.Add(Text("Planner algorithm", "rm-field-label"));
             algorithm = new DropdownField(new List<string>
             {
-                "Optimized RRT-Connect", "Fast RRT-Connect", "Joint-Space PRM", "Informed RRT*", "Cartesian Arc", "3D Grid A*"
+                "Optimized RRT-Connect", "Fast RRT-Connect", "Joint-Space PRM", "Informed RRT*", "Cartesian Arc", "3D Grid A*", "Cartesian Linear (MoveL)"
             }, Array.IndexOf(algorithms, planner.SelectedPlanner));
             algorithm.AddToClassList("rm-algorithm");
             algorithm.RegisterValueChangedCallback(evt =>
             {
                 if (syncing || planner.IsBusy) return;
-                if (algorithm.index >= 0 && planner.SetPlannerAlgorithm(algorithms[algorithm.index]))
+                if (algorithm.index >= 0 && algorithm.index < algorithms.Length && planner.SetPlannerAlgorithm(algorithms[algorithm.index]))
                 {
                     algorithmChanged = true;
                     message.text = "Planner changed. Reset & plan to create a new route.";
@@ -429,7 +429,9 @@ namespace RobotIK
                 syncing = true;
                 draft = planner.GetMotionSettings();
                 foreach (var sync in synchronize) sync(draft);
-                algorithm.SetValueWithoutNotify(algorithm.choices[Array.IndexOf(algorithms, planner.SelectedPlanner)]);
+                int selectedIndex = Array.IndexOf(algorithms, planner.SelectedPlanner);
+                if (selectedIndex >= 0 && selectedIndex < algorithm.choices.Count)
+                    algorithm.SetValueWithoutNotify(algorithm.choices[selectedIndex]);
                 SyncPlanningSettings();
                 syncing = false;
             }
@@ -575,3 +577,4 @@ namespace RobotIK
         }
     }
 }
+

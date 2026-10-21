@@ -32,7 +32,9 @@ namespace RobotIK
             [InspectorName("Joint-Space PRM (sampled roadmap)")]
             JointSpacePrm,
             [InspectorName("Informed RRT* (joint-space optimization)")]
-            InformedRrtStar
+            InformedRrtStar,
+            [InspectorName("Cartesian Linear (MoveL, strict TCP line)")]
+            CartesianLinear
         }
 
         private const int JointCount = RobotBaseSixAxisRig.JointCount;
@@ -46,6 +48,52 @@ namespace RobotIK
         public Transform ObstaclesRoot => obstaclesRoot;
         public IReadOnlyList<Transform> IntermediateWaypoints => intermediateWaypoints;
 
+        /// <summary>Insert an editable pose target after a route marker (or append when none is selected).</summary>
+        public Transform AddIntermediateWaypoint(Transform after)
+        {
+            if (IsBusy || startPose == null || endTarget == null) return null;
+            var points = new List<Transform>();
+            if (intermediateWaypoints != null)
+                foreach (Transform point in intermediateWaypoints) if (point != null) points.Add(point);
+            int index = after == startPose ? 0 : points.IndexOf(after) + 1;
+            if (after != startPose && !points.Contains(after)) index = points.Count;
+            Transform from = index == 0 ? startPose : points[index - 1];
+            Transform to = index < points.Count ? points[index] : endTarget;
+            var marker = new GameObject("MoveL Waypoint " + (points.Count + 1)).transform;
+            // A sibling of Start stays independent of the moving robot hierarchy.
+            marker.SetParent(startPose.parent, true);
+            marker.SetPositionAndRotation(Vector3.Lerp(from.position, to.position, 0.5f),
+                Quaternion.Slerp(from.rotation, to.rotation, 0.5f));
+            points.Insert(index, marker);
+            intermediateWaypoints = points.ToArray();
+            NotifySceneEdited();
+            Status = "Waypoint inserted. Move it to the desired clearance position, then reset & plan to validate each MoveL segment.";
+            return marker;
+        }
+
+        /// <summary>Remove a marker from the route without deleting the scene object.</summary>
+        public bool RemoveIntermediateWaypoint(Transform marker)
+        {
+            if (IsBusy || marker == null || intermediateWaypoints == null) return false;
+            var points = new List<Transform>(intermediateWaypoints);
+            if (!points.Remove(marker)) return false;
+            intermediateWaypoints = points.ToArray();
+            NotifySceneEdited();
+            return true;
+        }
+
+        public bool ReorderIntermediateWaypoint(Transform marker, int offset)
+        {
+            if (IsBusy || marker == null || intermediateWaypoints == null) return false;
+            var points = new List<Transform>(intermediateWaypoints);
+            int index = points.IndexOf(marker), next = index + offset;
+            if (index < 0 || next < 0 || next >= points.Count) return false;
+            points.RemoveAt(index);
+            points.Insert(next, marker);
+            intermediateWaypoints = points.ToArray();
+            NotifySceneEdited();
+            return true;
+        }
         public bool CanEditSceneObject(Transform target)
         {
             if (target == null || IsBusy || target == transform || target.IsChildOf(transform)) return false;
@@ -84,6 +132,29 @@ namespace RobotIK
         [SerializeField] private Transform endTarget;
         [Tooltip("When disabled, A and B are position targets and the tool keeps its current world orientation.")]
         [SerializeField] private bool useMarkerOrientations;
+        [Header("Cartesian Linear Routing")]
+        [Tooltip("When a direct MoveL segment is blocked, search for intermediate poses connected by validated straight segments. Disable for strict straight-line-only behavior.")]
+        [SerializeField] private bool automaticallyFindLinearWaypoints = true;
+        public enum LinearRoutingMode { AutomaticFreeSpace, ForceLiftTraverseDescend }
+        [Tooltip("Automatic searches overhead, underneath and beside obstacles. Force mode explicitly restricts the route to rise/traverse/descend.")]
+        [SerializeField] private LinearRoutingMode linearRoutingMode = LinearRoutingMode.AutomaticFreeSpace;
+        [Tooltip("Optional scanned free-space map for automatic MoveL waypoint search. Leave empty to use geometry-based routing.")]
+        [SerializeField] private global::GridOccupancyScanner linearOccupancyScanner;
+        [Tooltip("Complete a fresh occupancy scan before every automatic Cartesian Linear planning run. Runtime scans yield between batches to keep the Scene responsive.")]
+        [SerializeField] private bool scanLinearOccupancyBeforePlanning = true;
+        [SerializeField, Min(1)] private int linearGridMaximumNodes = 50000;
+        [Tooltip("Maximum grid corridors to try after MoveL validation failures. Attempts share the existing time, node and edge budgets.")]
+        [SerializeField, Min(1)] private int linearGridMaximumRouteAttempts = 12;
+        [Tooltip("Minimum rise above the higher endpoint in millimeters. Obstacle height and clearance can require a higher traverse.")]
+        [SerializeField, Min(10f)] private float linearMinimumLiftMillimeters = 150f;
+        [SerializeField, Range(8, 512)] private int linearWaypointMaximumEdgeChecks = 80;
+        [Tooltip("Computation budget per automatic routing attempt. Includes scene-query execution but excludes waiting for frame-budgeted main-thread requests.")]
+        [SerializeField, Min(0.1f)] private float linearWaypointSearchSeconds = 15f;
+        [Tooltip("Maximum real elapsed seconds per runtime Cartesian segment, including queue waits and the initial direct-line attempt.")]
+        [SerializeField, Min(1f)] private float cartesianSegmentWallTimeSeconds = 30f;
+        [Tooltip("After finding a valid MoveL route, try shorter low-clearance corridors, redundant-corner removal, and smaller detours. Every replacement is fully validated.")]
+        [SerializeField] private bool optimizeLinearPath = true;
+        [SerializeField, Min(0f)] private float linearPathOptimizationSeconds = 4f;
         [Header("Adaptive Goal")]
         [Tooltip("If the exact End Target has no valid IK branch, try nearby goal poses within these tolerances. All robot collision and minimum clearance checks still apply. The End Target transform is not moved.")]
         [SerializeField] private bool adaptiveGoal;
@@ -119,8 +190,8 @@ namespace RobotIK
         [Tooltip("Maximum distinct A* routes tried per Cartesian segment when IK or full robot collision checks reject a route.")]
         [SerializeField, HideInInspector, Range(1, 32)] private int maximumGridRouteAttempts = 8;
         // Grid/Cartesian settings remain serialized for existing scenes but are hidden in the Inspector.
-        [SerializeField, HideInInspector] private bool showGridOccupancyGizmos = true;
-        [SerializeField, HideInInspector] private bool showGridFailureGizmo = true;
+        [SerializeField] private bool showGridOccupancyGizmos = true;
+        [SerializeField] private bool showGridFailureGizmo = true;
         [Tooltip("Maximum occupied grid cells drawn in the Scene view.")]
         [SerializeField, HideInInspector, Range(100, 10000)] private int maximumGridGizmoCells = 2500;
         [Tooltip("Penalty applied to squared J4-J6 changes when ranking branches and searching joint space. Higher values discourage unnecessary TCP wrist rotation, but can favor larger shoulder/elbow movements.")]
@@ -207,8 +278,19 @@ namespace RobotIK
         private readonly Dictionary<JointSegmentKey, float> rrtTcpTravelCache =
             new Dictionary<JointSegmentKey, float>();
         private LineRenderer pathRenderer;
+        private Material pathMaterial;
         private Transform waypointLabelsRoot;
         private readonly List<TextMesh> waypointLabels = new List<TextMesh>();
+        private readonly List<Vector3> automaticLinearWaypoints = new List<Vector3>();
+        public IReadOnlyList<Vector3> AutomaticLinearWaypoints => automaticLinearWaypoints;
+        private string lastCollisionPair;
+        private Vector3 lastCollisionTcpPosition;
+        private bool hasCartesianFailurePosition;
+        private Vector3 cartesianFailurePosition;
+        private string cartesianFailureLabel;
+#if UNITY_EDITOR
+        private Vector2 cartesianDiagnosticScroll;
+#endif
         private string lastCartesianFailure = "No Cartesian arc was checked.";
         private string lastGridFailure = "No grid route was checked.";
         private string lastJointPlannerFailure = "No joint-space route was found.";
@@ -256,6 +338,12 @@ namespace RobotIK
             StopAllCoroutines();
             execution = null;
             CurrentMotionState = MotionState.Ready;
+        }
+
+        private void OnDestroy()
+        {
+            if (pathMaterial == null) return;
+            if (Application.isPlaying) Destroy(pathMaterial); else DestroyImmediate(pathMaterial);
         }
 
         private void Awake()
@@ -387,13 +475,15 @@ namespace RobotIK
 
         private void Update()
         {
-            // RRT search runs on a worker, but each segment's Physics/Transform sweep is
+            // RRT and Cartesian searches run on workers, but Physics/Transform queries are
             // serviced here on Unity's main thread. Bound the number of segment sweeps per
             // frame so a large iteration budget does not monopolize the editor/game loop.
             if (rrtMainThreadRequests.IsEmpty) return;
-            var timer = System.Diagnostics.Stopwatch.StartNew();
-            while (timer.Elapsed.TotalMilliseconds < 3.0 && rrtMainThreadRequests.TryDequeue(out Action request))
-                request();
+            // Cartesian validation is a sequential request/response pipeline. Keep
+            // the existing frame window open while the worker posts the next batch.
+            bool cartesian = IsCartesianPlanner;
+            PlanningQueryUtilities.Drain(rrtMainThreadRequests, 3.0,
+                () => cartesian && IsRrtSearchInProgress);
         }
 
         private void OnValidate()
@@ -562,6 +652,24 @@ namespace RobotIK
             }
 
             Status = "Planning from current robot pose to Start, then to End Target...";
+            if (ShouldScanLinearOccupancy)
+            {
+                Status = "Scanning occupancy before Cartesian Linear planning...";
+                var scan = linearOccupancyScanner.ScanOverFrames(gridSearchCancellation.Token);
+                try
+                {
+                    while (scan.MoveNext())
+                    {
+                        Status = $"Scanning occupancy before Cartesian Linear planning: {linearOccupancyScanner.ScanProgress:P0}";
+                        yield return scan.Current;
+                    }
+                }
+                finally { (scan as IDisposable)?.Dispose(); }
+                if (!linearOccupancyScanner.TryGetPlanningSnapshot(out _, out string scanError))
+                { Fail("Occupancy scan failed: " + scanError); execution = null; yield break; }
+                Status = "Occupancy scan complete. Planning Cartesian Linear motion...";
+                yield return null;
+            }
             float[] originalAngles = rig.GetJointAnglesDegrees();
             Quaternion preferredRotation = GetCurrentTcp().rotation;
             Quaternion startRotation = useMarkerOrientations ? startPose.rotation : preferredRotation;
@@ -608,7 +716,7 @@ namespace RobotIK
                 yield break;
             }
 
-            if (plannerAlgorithm == PlannerAlgorithm.CartesianArc)
+            if (IsCartesianPlanner)
             {
                 bool cartesianFound = false;
                 List<float[]> bestCartesianPath = null;
@@ -617,13 +725,17 @@ namespace RobotIK
                 Transform tcp = GetCurrentTcp();
                 Vector3 currentPosition = tcp.position;
                 Quaternion currentRotation = tcp.rotation;
-                for (int s = 0; s < validStarts.Count && !cartesianFound; s++)
+                for (int s = 0; s < validStarts.Count && !cartesianFound && (plannerAlgorithm != PlannerAlgorithm.CartesianLinear || s == 0); s++)
                 {
+                    automaticLinearWaypoints.Clear();
                     rig.SetJointAngles(originalAngles);
                     Physics.SyncTransforms();
                     var toStart = new List<float[]>();
-                    if (!TryBuildCartesianArc(originalAngles, currentPosition, currentRotation,
-                            validStarts[s], startPose.position, startRotation, toStart))
+                    bool reachedStart = false;
+                    yield return StartCoroutine(TryBuildCartesianSegmentOverFrames(originalAngles, currentPosition, currentRotation,
+                        validStarts[s], startPose.position, startRotation, toStart, ok => reachedStart = ok,
+                        isApproachToStart: true));
+                    if (!reachedStart)
                     {
                         lastCartesianFailure = $"Current TCP to Start: {lastCartesianFailure}";
                         continue;
@@ -631,22 +743,23 @@ namespace RobotIK
                     var tailPoses = new List<Transform>(viaPoses) { endTarget };
                     var tailSolutions = new List<List<float[]>>(viaSolutions) { validGoals };
                     bestCartesianPath = new List<float[]>(toStart);
-                    cartesianFound = TryBuildCartesianTail(validStarts[s], startPose.position, startRotation,
-                        tailPoses, tailSolutions, 0, bestCartesianPath, preferredRotation);
+                    yield return StartCoroutine(TryBuildCartesianTailOverFrames(toStart[toStart.Count - 1], startPose.position, startRotation,
+                        tailPoses, tailSolutions, 0, bestCartesianPath, preferredRotation, ok => cartesianFound = ok));
                     if (!cartesianFound) lastCartesianFailure = $"Start through intermediate waypoint(s) to End Target: {lastCartesianFailure}";
                 }
                 rig.SetJointAngles(originalAngles);
                 Physics.SyncTransforms();
                 if (!cartesianFound)
                 {
-                    Fail($"Cartesian Arc failed. {lastCartesianFailure}");
+                    Fail($"{GetPlannerAlgorithmLabel()} failed. {lastCartesianFailure}");
                     execution = null;
                     yield break;
                 }
+                hasCartesianFailurePosition = false;
                 path.AddRange(bestCartesianPath);
                 // Keep the Cartesian samples: joint-space shortcutting would pull the
                 // TCP away from the selected Cartesian arc even if it remains collision-free.
-                SetPlanSummary($"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
+                SetPlanSummary($"Plan found with {GetPlannerAlgorithmLabel()} after {cartesianArcAttempts} Cartesian route attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
                 Status = lastPlanSummary;
                 Debug.Log($"Motion planner: {Status}", this);
                 DrawPlannedPath();
@@ -794,6 +907,281 @@ namespace RobotIK
             rig.SetJointAngles(restoreAngles);
             Physics.SyncTransforms();
             completed(connected);
+        }
+
+        // Share the RRT worker/main-thread bridge. All captured scene delegates below
+        // execute only inside InvokeRrtMainThread; worker code sees copied value data.
+        private RobotBaseSixAxisPlannerAlgorithm.World CreateCartesianWorkerWorld(float[] restoreAngles,
+            CancellationToken token, Func<bool> optimizationShouldStop)
+        {
+            var sceneWorld = CreateAlgorithmWorld();
+            var evaluator = new CartesianLinearPlanner(sceneWorld);
+            bool checkSingularity = plannerAlgorithm == PlannerAlgorithm.CartesianLinear;
+            float wristPenalty = wristMotionPenalty;
+            float occupancyInflation = gridObstacleInflationMillimeters * 0.001f;
+            var obstacles = (Bounds[])sceneWorld.LinearRoutingObstacles.Clone();
+            var cache = new Dictionary<ExactJointSegmentKey, RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck>();
+            float[] ikSeed = (float[])restoreAngles.Clone();
+            RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck lastCheck = null;
+            ExactJointSegmentKey Key(float[] q) => new ExactJointSegmentKey(q, Array.Empty<float>());
+            var computationClock = new PlanningComputationClock();
+
+            T OnMain<T>(Func<T> query)
+            {
+                computationClock.SuspendForQuery();
+                long executionTicks = 0;
+                try
+                {
+                    var answer = InvokeRrtMainThread(() =>
+                    {
+                        var queryTimer = System.Diagnostics.Stopwatch.StartNew();
+                        T value = query();
+                        return (value, queryTimer.ElapsedTicks);
+                    }, token);
+                    executionTicks = answer.Item2;
+                    return answer.Item1;
+                }
+                finally { computationClock.ResumeAfterQuery(executionTicks); }
+            }
+
+            RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck QueryScene(float[] q)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!rig.SetJointAngles(q)) throw new InvalidOperationException("Could not evaluate Cartesian planning state.");
+                Physics.SyncTransforms();
+                Transform tcp = GetCurrentTcp();
+                var check = new RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck
+                {
+                    Position = tcp.position, Rotation = tcp.rotation
+                };
+                check.Collision = IsInCollision(out string pair);
+                check.CollisionDescription = pair;
+                if (!check.Collision && checkSingularity) check.SingularityFailure = evaluator.GetSingularityRejection(q);
+                System.Threading.Interlocked.Increment(ref currentRrtSearchIterations);
+                return check;
+            }
+
+            RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck[] CheckBatch(IReadOnlyList<float[]> states)
+            {
+                token.ThrowIfCancellationRequested();
+                var checks = new RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck[states.Count];
+                var missing = new List<int>();
+                for (int i = 0; i < states.Count; i++)
+                    if (cache.TryGetValue(Key(states[i]), out var check)) checks[i] = check;
+                    else missing.Add(i);
+                // A query has a small bounded number of FK/Jacobian/physics checks.
+                // Update pumps these requests for the same 3 ms/frame budget as RRT.
+                for (int offset = 0; offset < missing.Count; offset += 3)
+                {
+                    int first = offset, count = Math.Min(3, missing.Count - offset);
+                    var answers = OnMain(() =>
+                    {
+                        try
+                        {
+                            var batch = new RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck[count];
+                            for (int j = 0; j < count; j++) batch[j] = QueryScene(states[missing[first + j]]);
+                            return batch;
+                        }
+                        finally { rig.SetJointAngles(restoreAngles); Physics.SyncTransforms(); }
+                    });
+                    for (int j = 0; j < count; j++)
+                    {
+                        int index = missing[first + j];
+                        checks[index] = answers[j]; cache[Key(states[index])] = answers[j];
+                    }
+                }
+                if (checks.Length > 0) lastCheck = checks[checks.Length - 1];
+                return checks;
+            }
+            RobotBaseSixAxisPlannerAlgorithm.ConfigurationCheck Check(float[] q) => CheckBatch(new[] { q })[0];
+
+            var world = new RobotBaseSixAxisPlannerAlgorithm.World
+            {
+                JointLimits = (Vector2[])sceneWorld.JointLimits.Clone(),
+                ObstacleBounds = (Vector3[])sceneWorld.ObstacleBounds.Clone(),
+                Workspace = sceneWorld.Workspace,
+                LinearRoutingObstacles = obstacles,
+                Clearance = sceneWorld.Clearance,
+                CollisionResolutionDegrees = sceneWorld.CollisionResolutionDegrees,
+                ArcStepMeters = sceneWorld.ArcStepMeters,
+                LinearAutomaticWaypoints = sceneWorld.LinearAutomaticWaypoints,
+                LinearForceLiftTraverseDescend = sceneWorld.LinearForceLiftTraverseDescend,
+                LinearExploreSpatialCorridors = sceneWorld.LinearExploreSpatialCorridors,
+                LinearOccupancyGrid = sceneWorld.LinearOccupancyGrid,
+                LinearOccupancyError = sceneWorld.LinearOccupancyError,
+                LinearGridMaximumNodes = sceneWorld.LinearGridMaximumNodes,
+                LinearGridMaximumRouteAttempts = sceneWorld.LinearGridMaximumRouteAttempts,
+                LinearMinimumLiftMeters = sceneWorld.LinearMinimumLiftMeters,
+                LinearAllowAlternateGoalConfiguration = sceneWorld.LinearAllowAlternateGoalConfiguration,
+                LinearWaypointMaximumEdges = sceneWorld.LinearWaypointMaximumEdges,
+                LinearWaypointSearchSeconds = sceneWorld.LinearWaypointSearchSeconds,
+                LinearOptimizePath = sceneWorld.LinearOptimizePath,
+                LinearOptimizationSeconds = sceneWorld.LinearOptimizationSeconds,
+                OptimizationShouldStop = optimizationShouldStop,
+                LinearCharacteristicLengthMeters = sceneWorld.LinearCharacteristicLengthMeters,
+                LinearMinimumSingularValueRatio = sceneWorld.LinearMinimumSingularValueRatio,
+                CancellationToken = token,
+                PlanningElapsedSeconds = () => computationClock.ElapsedSeconds,
+                EvaluateConfiguration = Check,
+                EvaluateConfigurationBatch = CheckBatch,
+                GetTcpPosition = q => { ikSeed = (float[])q.Clone(); return Check(q).Position; },
+                GetTcpRotation = q => Check(q).Rotation,
+                IsConfigurationInCollision = q => Check(q).Collision,
+                GetLastCollisionDescription = () => lastCheck?.CollisionDescription,
+                GetLastCollisionTcpPosition = () => lastCheck == null ? Vector3.zero : lastCheck.Position,
+                SolveIk = (position, rotation) =>
+                {
+                    float[] seed = (float[])ikSeed.Clone();
+                    var solutions = OnMain(() =>
+                    {
+                        try
+                        {
+                            rig.SetJointAngles(seed); Physics.SyncTransforms();
+                            return sceneWorld.SolveIk(position, rotation);
+                        }
+                        finally { rig.SetJointAngles(restoreAngles); Physics.SyncTransforms(); }
+                    });
+                    // The planner filters unreachable branches before batching checks.
+                    return solutions;
+                },
+                MotionCost = (a, b) => ComputeWorkerMotionCost(a, b, wristPenalty),
+                IsCartesianPointBlocked = (position, clearance) =>
+                {
+                    foreach (Bounds obstacle in obstacles)
+                    {
+                        Bounds expanded = obstacle;
+                        expanded.Expand(2f * Math.Max(clearance, occupancyInflation));
+                        if (expanded.Contains(position)) return true;
+                    }
+                    return false;
+                },
+                IsJointSegmentFree = (from, to) =>
+                {
+                    double distance = 0;
+                    for (int j = 0; j < from.Length; j++) distance += (to[j] - from[j]) * (to[j] - from[j]);
+                    int count = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(distance) / sceneWorld.CollisionResolutionDegrees));
+                    for (int i = 0; i <= count; i++)
+                    {
+                        var state = new float[from.Length];
+                        for (int j = 0; j < state.Length; j++) state[j] = from[j] + (to[j] - from[j]) * (i / (float)count);
+                        if (Check(state).Collision) return false;
+                    }
+                    return true;
+                }
+            };
+            return world;
+        }
+
+        private IEnumerator TryBuildCartesianSegmentOverFrames(float[] startAngles, Vector3 startPosition,
+            Quaternion startRotation, float[] endAngles, Vector3 endPosition, Quaternion endRotation,
+            List<float[]> result, Action<bool> completed, string segmentLabel = "Current TCP -> Start",
+            bool isApproachToStart = false)
+        {
+            result.Clear();
+            Status = $"{segmentLabel}: searching with {GetPlannerAlgorithmLabel()} on a worker thread...";
+            CancellationToken parentToken = gridSearchCancellation != null ? gridSearchCancellation.Token : CancellationToken.None;
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(parentToken);
+            float wallLimit = Mathf.Max(1f, cartesianSegmentWallTimeSeconds);
+            deadline.CancelAfter(TimeSpan.FromSeconds(wallLimit));
+            CancellationToken token = deadline.Token;
+            var segmentTimer = System.Diagnostics.Stopwatch.StartNew();
+            float[] restoreAngles = rig.GetJointAnglesDegrees();
+            var workerWorld = CreateCartesianWorkerWorld(restoreAngles, token,
+                () => segmentTimer.Elapsed.TotalSeconds >= Math.Max(0, wallLimit - 1f));
+            // Positioning at Start must not introduce a forced lift and descent
+            // before the authored route begins. Necessary collision detours remain enabled.
+            if (isApproachToStart) workerWorld.LinearForceLiftTraverseDescend = false;
+            var kind = GetAlgorithmKind();
+            System.Threading.Interlocked.Exchange(ref currentRrtSearchIterations, 0);
+            System.Threading.Interlocked.Exchange(ref rrtSearchInProgress, 1);
+            var search = Task.Run(() =>
+            {
+                try
+                {
+                    bool found = new RobotBaseSixAxisPlannerAlgorithm(workerWorld).TryPlan(kind,
+                        startAngles, endAngles, startPosition, startRotation, endPosition, endRotation, out var plan);
+                    return new RrtWorkerOutcome { Found = found, Result = plan };
+                }
+                catch (OperationCanceledException) { return new RrtWorkerOutcome { Cancelled = true }; }
+                catch (Exception error) { return new RrtWorkerOutcome { Error = error }; }
+            });
+            try
+            {
+                while (!search.IsCompleted)
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        if (!parentToken.IsCancellationRequested)
+                            lastCartesianFailure = $"Segment [{segmentLabel}] stopped at the {wallLimit:F1} s wall-time limit ({CurrentRrtSearchIterations} configuration checks). No partial path will execute.";
+                        completed(false); yield break;
+                    }
+                    yield return null;
+                }
+                var outcome = search.GetAwaiter().GetResult();
+                if (outcome.Error != null)
+                {
+                    Debug.LogException(outcome.Error, this);
+                    lastCartesianFailure = $"Segment [{segmentLabel}]: {outcome.Error.Message}";
+                    completed(false); yield break;
+                }
+                if (outcome.Cancelled || outcome.Result == null)
+                {
+                    if (token.IsCancellationRequested && !parentToken.IsCancellationRequested)
+                        lastCartesianFailure = $"Segment [{segmentLabel}] stopped at the {wallLimit:F1} s wall-time limit ({CurrentRrtSearchIterations} configuration checks). No partial path will execute.";
+                    completed(false); yield break;
+                }
+                var plan = outcome.Result;
+                if (!string.IsNullOrEmpty(plan.RoutingDiagnostics))
+                    Debug.Log($"MoveL routing diagnostics [{segmentLabel}] (mode: {linearRoutingMode}):\n{plan.RoutingDiagnostics}", this);
+                cartesianArcAttempts += plan.RoutesTried;
+                planningIterations += plan.Iterations;
+                if (!outcome.Found)
+                {
+                    hasCartesianFailurePosition = plan.HasFailurePosition;
+                    cartesianFailurePosition = plan.FailurePosition;
+                    cartesianFailureLabel = segmentLabel + "\n" + plan.FailureReason;
+                    lastCartesianFailure = $"Segment [{segmentLabel}]. Tried {plan.RoutesTried} Cartesian route(s). {plan.FailureReason} Clearance is {minimumObstacleClearance * 1000f:F0} mm.";
+                    completed(false); yield break;
+                }
+                automaticLinearWaypoints.AddRange(plan.AutomaticWaypoints);
+                result.AddRange(plan.JointPath);
+                completed(result.Count > 1);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref rrtSearchInProgress, 0);
+                rig.SetJointAngles(restoreAngles); Physics.SyncTransforms();
+            }
+        }
+
+        private IEnumerator TryBuildCartesianTailOverFrames(float[] fromAngles, Vector3 fromPosition, Quaternion fromRotation,
+            List<Transform> poses, List<List<float[]>> poseSolutions, int stageIndex,
+            List<float[]> accumulatedPath, Quaternion defaultRotation, Action<bool> completed)
+        {
+            if (stageIndex >= poses.Count) { completed(true); yield break; }
+            Transform pose = poses[stageIndex];
+            var candidates = poseSolutions[stageIndex];
+            SortByDistance(candidates, fromAngles);
+            int prefixCount = accumulatedPath.Count, automaticPrefix = automaticLinearWaypoints.Count;
+            GetPlanningPose(pose, defaultRotation, out Vector3 position, out Quaternion rotation);
+            string label = (stageIndex == 0 ? $"Start ({startPose.name})" : $"WP{stageIndex} ({poses[stageIndex - 1].name})") +
+                " -> " + (stageIndex == poses.Count - 1 ? $"End Target ({pose.name})" : $"WP{stageIndex + 1} ({pose.name})");
+            for (int i = 0; i < candidates.Count && (plannerAlgorithm != PlannerAlgorithm.CartesianLinear || i == 0); i++)
+            {
+                var segment = new List<float[]>();
+                bool found = false;
+                yield return StartCoroutine(TryBuildCartesianSegmentOverFrames(fromAngles, fromPosition, fromRotation,
+                    candidates[i], position, rotation, segment, ok => found = ok, label));
+                if (!found) continue;
+                for (int j = 1; j < segment.Count; j++) accumulatedPath.Add(segment[j]);
+                bool tailFound = false;
+                yield return StartCoroutine(TryBuildCartesianTailOverFrames(segment[segment.Count - 1], position, rotation,
+                    poses, poseSolutions, stageIndex + 1, accumulatedPath, defaultRotation, ok => tailFound = ok));
+                if (tailFound) { completed(true); yield break; }
+                accumulatedPath.RemoveRange(prefixCount, accumulatedPath.Count - prefixCount);
+                automaticLinearWaypoints.RemoveRange(automaticPrefix, automaticLinearWaypoints.Count - automaticPrefix);
+            }
+            completed(false);
         }
 
         private sealed class RrtWorkerOutcome
@@ -948,12 +1336,15 @@ namespace RobotIK
             return free;
         }
 
+        private bool IsCartesianPlanner => plannerAlgorithm == PlannerAlgorithm.CartesianArc || plannerAlgorithm == PlannerAlgorithm.CartesianLinear;
+
         private RobotBaseSixAxisPlannerAlgorithm.Kind GetAlgorithmKind() => plannerAlgorithm switch
         {
             PlannerAlgorithm.RRTConnectFast => RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectFast,
             PlannerAlgorithm.RRTConnectOptimized => RobotBaseSixAxisPlannerAlgorithm.Kind.RrtConnectOptimized,
             PlannerAlgorithm.JointSpacePrm => RobotBaseSixAxisPlannerAlgorithm.Kind.JointSpacePrm,
             PlannerAlgorithm.InformedRrtStar => RobotBaseSixAxisPlannerAlgorithm.Kind.InformedRrtStar,
+            PlannerAlgorithm.CartesianLinear => RobotBaseSixAxisPlannerAlgorithm.Kind.CartesianLinear,
             PlannerAlgorithm.CartesianArc => RobotBaseSixAxisPlannerAlgorithm.Kind.CartesianArc,
             _ => RobotBaseSixAxisPlannerAlgorithm.Kind.GridAStar
         };
@@ -1139,6 +1530,7 @@ namespace RobotIK
             plannerAlgorithm == PlannerAlgorithm.RRTConnectFast ? "Fast RRT-Connect" :
             plannerAlgorithm == PlannerAlgorithm.JointSpacePrm ? "Joint-Space PRM" :
             plannerAlgorithm == PlannerAlgorithm.InformedRrtStar ? "Informed RRT*" :
+            plannerAlgorithm == PlannerAlgorithm.CartesianLinear ? "Cartesian Linear (MoveL)" :
             plannerAlgorithm == PlannerAlgorithm.CartesianArc ? "Cartesian Arc" :
             plannerAlgorithm == PlannerAlgorithm.GridAStar ? "3D Grid A*" : "Optimized RRT-Connect";
 
@@ -1661,23 +2053,34 @@ namespace RobotIK
             return false;
         }
 
-        /// <summary>Delegates Cartesian arc search to the plain C# planning algorithm.</summary>
-        private bool TryBuildCartesianArc(float[] startAngles, Vector3 startPosition, Quaternion startRotation,
-            float[] endAngles, Vector3 endPosition, Quaternion endRotation, List<float[]> result)
+        /// <summary>Delegates Cartesian arc or strict linear planning to a plain C# planner.</summary>
+        private bool TryBuildCartesianSegment(float[] startAngles, Vector3 startPosition, Quaternion startRotation,
+            float[] endAngles, Vector3 endPosition, Quaternion endRotation, List<float[]> result,
+            string segmentLabel = "Current TCP -> Start", bool isApproachToStart = false)
         {
             result.Clear();
-            if (algorithm == null) algorithm = new RobotBaseSixAxisPlannerAlgorithm(CreateAlgorithmWorld());
-            if (!algorithm.TryPlan(RobotBaseSixAxisPlannerAlgorithm.Kind.CartesianArc,
+            var segmentWorld = CreateAlgorithmWorld();
+            if (isApproachToStart) segmentWorld.LinearForceLiftTraverseDescend = false;
+            var segmentAlgorithm = new RobotBaseSixAxisPlannerAlgorithm(segmentWorld);
+            bool found = segmentAlgorithm.TryPlan(GetAlgorithmKind(),
                     startAngles, endAngles, startPosition, startRotation, endPosition, endRotation,
-                    out RobotBaseSixAxisPlannerAlgorithm.Result plan))
+                    out RobotBaseSixAxisPlannerAlgorithm.Result plan);
+            if (!string.IsNullOrEmpty(plan.RoutingDiagnostics))
+                Debug.Log($"MoveL routing diagnostics [{segmentLabel}] (mode: {linearRoutingMode}):\n{plan.RoutingDiagnostics}", this);
+            if (!found)
             {
                 cartesianArcAttempts += plan.RoutesTried;
-                lastCartesianFailure = $"Tried {plan.RoutesTried} arcs. {plan.FailureReason} Clearance is {minimumObstacleClearance * 1000f:F0} mm.";
+                hasCartesianFailurePosition = plan.HasFailurePosition;
+                cartesianFailurePosition = plan.FailurePosition;
+                cartesianFailureLabel = segmentLabel + "\n" + plan.FailureReason;
+                lastCartesianFailure = $"Segment [{segmentLabel}]. Tried {plan.RoutesTried} Cartesian route(s). {plan.FailureReason} Clearance is {minimumObstacleClearance * 1000f:F0} mm.";
                 rig.SetJointAngles(startAngles);
                 Physics.SyncTransforms();
                 return false;
             }
             cartesianArcAttempts += plan.RoutesTried;
+            planningIterations += plan.Iterations;
+            automaticLinearWaypoints.AddRange(plan.AutomaticWaypoints);
             result.AddRange(plan.JointPath);
             rig.SetJointAngles(startAngles);
             Physics.SyncTransforms();
@@ -1693,16 +2096,20 @@ namespace RobotIK
             List<float[]> candidates = poseSolutions[stageIndex];
             SortByDistance(candidates, fromAngles);
             int prefixCount = accumulatedPath.Count;
+            int automaticPrefix = automaticLinearWaypoints.Count;
             GetPlanningPose(pose, defaultRotation, out Vector3 targetPosition, out Quaternion targetRotation);
-            for (int i = 0; i < candidates.Count; i++)
+            string segmentLabel = (stageIndex == 0 ? $"Start ({startPose.name})" : $"WP{stageIndex} ({poses[stageIndex - 1].name})") +
+                " -> " + (stageIndex == poses.Count - 1 ? $"End Target ({pose.name})" : $"WP{stageIndex + 1} ({pose.name})");
+            for (int i = 0; i < candidates.Count && (plannerAlgorithm != PlannerAlgorithm.CartesianLinear || i == 0); i++)
             {
                 var segment = new List<float[]>();
-                if (!TryBuildCartesianArc(fromAngles, fromPosition, fromRotation,
-                        candidates[i], targetPosition, targetRotation, segment)) continue;
+                if (!TryBuildCartesianSegment(fromAngles, fromPosition, fromRotation,
+                        candidates[i], targetPosition, targetRotation, segment, segmentLabel)) continue;
                 for (int p = 1; p < segment.Count; p++) accumulatedPath.Add(segment[p]);
-                if (TryBuildCartesianTail(candidates[i], targetPosition, targetRotation,
+                if (TryBuildCartesianTail(segment[segment.Count - 1], targetPosition, targetRotation,
                         poses, poseSolutions, stageIndex + 1, accumulatedPath, defaultRotation)) return true;
                 accumulatedPath.RemoveRange(prefixCount, accumulatedPath.Count - prefixCount);
+                automaticLinearWaypoints.RemoveRange(automaticPrefix, automaticLinearWaypoints.Count - automaticPrefix);
             }
             return false;
         }
@@ -1763,6 +2170,13 @@ namespace RobotIK
             CacheColliders();
             if (robotColliders.Length == 0 || obstacleColliders.Length == 0)
                 return Fail("Collision geometry is missing. Assign robot colliders and colliders beneath Obstacles.");
+            if (ShouldScanLinearOccupancy)
+            {
+                Status = "Scanning occupancy before Cartesian Linear planning...";
+                linearOccupancyScanner.ScanOnce();
+                if (!linearOccupancyScanner.TryGetPlanningSnapshot(out _, out string scanError))
+                    return Fail("Occupancy scan failed: " + scanError);
+            }
 
             float[] originalAngles = rig.GetJointAnglesDegrees();
             try
@@ -1798,15 +2212,18 @@ namespace RobotIK
                 SortByDistance(validStarts, originalAngles);
                 validGoals.Sort((a, b) => CompareDistance(a, b, originalAngles));
                 var jointSpaceStages = new List<List<float[]>>(viaSolutions) { validGoals };
-                for (int s = 0; s < validStarts.Count; s++)
+                for (int s = 0; s < validStarts.Count && (plannerAlgorithm != PlannerAlgorithm.CartesianLinear || s == 0); s++)
                 {
                     path.Clear();
-                    if (plannerAlgorithm == PlannerAlgorithm.CartesianArc)
+                    if (IsCartesianPlanner)
                     {
+                        automaticLinearWaypoints.Clear();
+                        rig.SetJointAngles(originalAngles);
+                        Physics.SyncTransforms();
                         Transform tcp = GetCurrentTcp();
                         var prefix = new List<float[]>();
-                        if (!TryBuildCartesianArc(originalAngles, tcp.position, tcp.rotation,
-                                validStarts[s], startPose.position, startRotation, prefix))
+                        if (!TryBuildCartesianSegment(originalAngles, tcp.position, tcp.rotation,
+                                validStarts[s], startPose.position, startRotation, prefix, isApproachToStart: true))
                         {
                             lastCartesianFailure = $"Current TCP to Start: {lastCartesianFailure}";
                             continue;
@@ -1814,10 +2231,11 @@ namespace RobotIK
                         path.AddRange(prefix);
                         var tailPoses = new List<Transform>(viaPoses) { endTarget };
                         var tailSolutions = new List<List<float[]>>(viaSolutions) { validGoals };
-                        if (TryBuildCartesianTail(validStarts[s], startPose.position, startRotation,
+                        if (TryBuildCartesianTail(prefix[prefix.Count - 1], startPose.position, startRotation,
                                 tailPoses, tailSolutions, 0, path, preferredRotation))
                         {
-                            SetPlanSummary($"Plan found with Cartesian Arc after {cartesianArcAttempts} arc attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
+                            hasCartesianFailurePosition = false;
+                            SetPlanSummary($"Plan found with {GetPlannerAlgorithmLabel()} after {cartesianArcAttempts} Cartesian route attempts in {FinishPlanningTimer()} ({path.Count} waypoints).");
                             Status = lastPlanSummary;
                             Debug.Log($"Motion planner: {Status}", this);
                             DrawPlannedPath();
@@ -1828,6 +2246,8 @@ namespace RobotIK
                     }
                     if (plannerAlgorithm == PlannerAlgorithm.GridAStar)
                     {
+                        rig.SetJointAngles(originalAngles);
+                        Physics.SyncTransforms();
                         Transform tcp = GetCurrentTcp();
                         var prefix = new List<float[]>();
                         if (!TryBuildGridSegment(originalAngles, tcp.position, tcp.rotation,
@@ -1859,8 +2279,8 @@ namespace RobotIK
                     }
                 }
 
-                if (plannerAlgorithm == PlannerAlgorithm.CartesianArc)
-                    return Fail($"Cartesian Arc failed. {lastCartesianFailure}");
+                if (IsCartesianPlanner)
+                    return Fail($"{GetPlannerAlgorithmLabel()} failed. {lastCartesianFailure}");
                 if (plannerAlgorithm == PlannerAlgorithm.GridAStar)
                     return Fail($"3D Grid A* failed after {gridRouteAttempts} route attempt(s) and {planningIterations} grid nodes expanded. {lastGridFailure}");
                 return Fail($"No collision-free path found after {planningIterations} search iterations. Try more iterations or adjust the obstacles/targets.");
@@ -2004,6 +2424,8 @@ namespace RobotIK
 
         private void SetPlanSummary(string summary)
         {
+            if (plannerAlgorithm == PlannerAlgorithm.CartesianLinear && automaticLinearWaypoints.Count > 0)
+                summary += $" Automatically inserted {automaticLinearWaypoints.Count} MoveL waypoint(s).";
             lastPlanSummary = summary + (!adaptiveGoalUsed ? string.Empty :
                 $" Adaptive goal: {adaptiveGoalPositionOffsetMillimeters:F2} mm position offset / {adaptiveGoalRotationOffsetDegrees:F2} degrees rotation " +
                 $"({adaptiveGoalSamplesTried} samples; minimum clearance {minimumObstacleClearance * 1000f:F1} mm).");
@@ -2045,10 +2467,16 @@ namespace RobotIK
             return result.JointPath.Count > 1;
         }
 
+        private bool ShouldScanLinearOccupancy => plannerAlgorithm == PlannerAlgorithm.CartesianLinear &&
+            automaticallyFindLinearWaypoints && linearRoutingMode == LinearRoutingMode.AutomaticFreeSpace &&
+            linearOccupancyScanner != null && scanLinearOccupancyBeforePlanning;
+
         private RobotBaseSixAxisPlannerAlgorithm.World CreateAlgorithmWorld()
         {
             Bounds workspace = new Bounds(startPose != null ? startPose.position : transform.position, Vector3.zero);
             if (endTarget != null) workspace.Encapsulate(endTarget.position);
+            if (intermediateWaypoints != null)
+                foreach (Transform waypoint in intermediateWaypoints) if (waypoint != null) workspace.Encapsulate(waypoint.position);
             var bounds = obstacleColliders ?? Array.Empty<Collider>();
             var obstacleBounds = new Vector3[bounds.Length];
             for (int i = 0; i < bounds.Length; i++)
@@ -2059,6 +2487,17 @@ namespace RobotIK
             var world = new RobotBaseSixAxisPlannerAlgorithm.World
             {
                 IsJointSegmentFree = IsSegmentFree,
+                GetLastCollisionDescription = () => lastCollisionPair,
+                GetLastCollisionTcpPosition = () => lastCollisionTcpPosition,
+                LinearAutomaticWaypoints = automaticallyFindLinearWaypoints,
+                LinearForceLiftTraverseDescend = linearRoutingMode == LinearRoutingMode.ForceLiftTraverseDescend,
+                LinearMinimumLiftMeters = Mathf.Max(10f, linearMinimumLiftMillimeters) * 0.001f,
+                LinearWaypointMaximumEdges = Mathf.Max(1, linearWaypointMaximumEdgeChecks),
+                LinearWaypointSearchSeconds = Mathf.Max(0.1f, linearWaypointSearchSeconds),
+                LinearOptimizePath = optimizeLinearPath,
+                LinearOptimizationSeconds = Mathf.Max(0f, linearPathOptimizationSeconds),
+                LinearRoutingObstacles = Array.ConvertAll(Array.FindAll(bounds, c => c != null && c.enabled && !c.isTrigger), c => c.bounds),
+                LinearAllowAlternateGoalConfiguration = plannerAlgorithm == PlannerAlgorithm.CartesianLinear,
                 SolveIk = (position, rotation) => inverseKinematics.SolveAll(position, rotation, out List<float[]> solved) ? solved : null,
                 GetTcpPosition = angles => { rig.SetJointAngles(angles); Physics.SyncTransforms(); return GetCurrentTcp().position; },
                 GetTcpRotation = angles => { rig.SetJointAngles(angles); Physics.SyncTransforms(); return GetCurrentTcp().rotation; },
@@ -2094,6 +2533,30 @@ namespace RobotIK
                 GoalBias = goalBias,
                 Random = random ?? new System.Random(randomSeed == 0 ? 1 : randomSeed)
             };
+            world.GetJacobian = angles =>
+            {
+                // Revolute joint axes are invariant under their own rotation. World
+                // origins/axes give the TCP Jacobian without finite-difference FK sweeps.
+                if (!rig.SetJointAngles(angles)) throw new InvalidOperationException("Could not evaluate Jacobian state.");
+                var origins = new Vector3[JointCount];
+                var axes = new Vector3[JointCount];
+                for (int j = 0; j < JointCount; j++)
+                {
+                    origins[j] = rig.Joints[j].position;
+                    axes[j] = rig.Joints[j].TransformDirection(rig.LocalAxes[j]).normalized;
+                }
+                return CartesianLinearPlanner.GeometricJacobian(origins, axes, GetCurrentTcp().position,
+                    world.LinearCharacteristicLengthMeters);
+            };
+            if (plannerAlgorithm == PlannerAlgorithm.CartesianLinear && automaticallyFindLinearWaypoints &&
+                linearRoutingMode == LinearRoutingMode.AutomaticFreeSpace && linearOccupancyScanner != null)
+            {
+                if (linearOccupancyScanner.TryGetPlanningSnapshot(out var snapshot, out string error))
+                    world.LinearOccupancyGrid = snapshot;
+                else world.LinearOccupancyError = error;
+                world.LinearGridMaximumNodes = Mathf.Max(1, linearGridMaximumNodes);
+                world.LinearGridMaximumRouteAttempts = Mathf.Max(1, linearGridMaximumRouteAttempts);
+            }
             return world;
         }
 
@@ -2140,7 +2603,9 @@ namespace RobotIK
 
         private bool IsInCollision()
         {
-            return IsInCollision(out _);
+            bool collision = IsInCollision(out lastCollisionPair);
+            if (collision) lastCollisionTcpPosition = GetCurrentTcp().position;
+            return collision;
         }
 
         private bool IsInCollision(out string collisionPair)
@@ -2150,24 +2615,26 @@ namespace RobotIK
             {
                 Collider robotCollider = robotColliders[i];
                 if (robotCollider == null || !robotCollider.enabled || robotCollider.isTrigger) continue;
+                Bounds robotBounds = robotCollider.bounds;
                 for (int j = 0; j < obstacleColliders.Length; j++)
                 {
                     Collider obstacle = obstacleColliders[j];
                     if (obstacle == null || !obstacle.enabled || obstacle.isTrigger) continue;
+                    if (!PlanningQueryUtilities.CouldViolateClearance(robotBounds, obstacle.bounds, minimumObstacleClearance)) continue;
                     if (Physics.ComputePenetration(robotCollider, robotCollider.transform.position,
                             robotCollider.transform.rotation, obstacle, obstacle.transform.position,
                             obstacle.transform.rotation, out _, out _))
                     {
-                        collisionPair = $"{robotCollider.name} ({robotCollider.GetType().Name}) / {obstacle.name} ({obstacle.GetType().Name})";
+                        collisionPair = $"Robot link {DescribeCollisionObject(robotCollider)} / obstacle {DescribeCollisionObject(obstacle)} (penetration)";
                         if (plannerAlgorithm == PlannerAlgorithm.GridAStar)
                             SetGridFailurePosition((robotCollider.ClosestPoint(obstacle.bounds.center) +
                                 obstacle.ClosestPoint(robotCollider.bounds.center)) * 0.5f);
                         return true;
                     }
-                    float clearance = GetColliderSeparation(robotCollider, obstacle);
+                    float clearance = minimumObstacleClearance > 0f ? GetColliderSeparation(robotCollider, obstacle) : float.PositiveInfinity;
                     if (minimumObstacleClearance > 0f && clearance < minimumObstacleClearance)
                     {
-                        collisionPair = $"{robotCollider.name} / {obstacle.name} (clearance {clearance:F3} m < {minimumObstacleClearance:F3} m)";
+                        collisionPair = $"Robot link {DescribeCollisionObject(robotCollider)} / obstacle {DescribeCollisionObject(obstacle)} (clearance {clearance * 1000f:F2} mm < {minimumObstacleClearance * 1000f:F2} mm)";
                         if (plannerAlgorithm == PlannerAlgorithm.GridAStar)
                             SetGridFailurePosition((robotCollider.ClosestPoint(obstacle.bounds.center) +
                                 obstacle.ClosestPoint(robotCollider.bounds.center)) * 0.5f);
@@ -2184,9 +2651,11 @@ namespace RobotIK
                 Collider second = robotColliders[b];
                 if (first == null || second == null || first.isTrigger || second.isTrigger ||
                     AreSameOrAdjacentLink(first.transform, second.transform)) continue;
+                if (!PlanningQueryUtilities.CouldViolateClearance(first.bounds, second.bounds, 0f)) continue;
                 if (Physics.ComputePenetration(first, first.transform.position, first.transform.rotation,
                         second, second.transform.position, second.transform.rotation, out _, out _))
                 {
+                    collisionPair = $"Self collision: {DescribeCollisionObject(first)} / {DescribeCollisionObject(second)}";
                     if (plannerAlgorithm == PlannerAlgorithm.GridAStar)
                         SetGridFailurePosition((first.ClosestPoint(second.bounds.center) +
                             second.ClosestPoint(first.bounds.center)) * 0.5f);
@@ -2194,6 +2663,14 @@ namespace RobotIK
                 }
             }
             return false;
+        }
+
+        private static string DescribeCollisionObject(Collider collider)
+        {
+            string path = collider.name;
+            for (Transform parent = collider.transform.parent; parent != null; parent = parent.parent)
+                path = parent.name + "/" + path;
+            return path + " (" + collider.GetType().Name + ")";
         }
 
         // Alternate closest-point projections on the actual collider surfaces.
@@ -2401,6 +2878,7 @@ namespace RobotIK
                     TcpDecelerationMillimetersPerSecondSquared = DecelerationSpeed,
                     TcpRotationAccelerationDegreesPerSecondSquared = RotationAcceleration,
                     TcpRotationDecelerationDegreesPerSecondSquared = RotationDeceleration,
+                    EnableCornerSmoothing = plannerAlgorithm != PlannerAlgorithm.CartesianLinear,
                     PathAccuracyMillimeters = pathAccuracyMillimeters,
                     CollisionResolutionDegrees = collisionResolutionDegrees
                 }, angles =>
@@ -2485,6 +2963,17 @@ namespace RobotIK
             rig.SetJointAngles(restore);
             Physics.SyncTransforms();
             gizmoPath = points.ToArray();
+            if (plannerAlgorithm == PlannerAlgorithm.CartesianLinear)
+            {
+                var required = new List<Vector3>(automaticLinearWaypoints);
+                if (startPose != null) required.Add(startPose.position);
+                if (intermediateWaypoints != null)
+                    foreach (Transform marker in intermediateWaypoints) if (marker != null) required.Add(marker.position);
+                var indices = PathDisplayWaypoints.Select(waypoints, waypointRotations, required);
+                var displayPositions = new List<Vector3>(); var displayRotations = new List<Quaternion>();
+                foreach (int index in indices) { displayPositions.Add(waypoints[index]); displayRotations.Add(waypointRotations[index]); }
+                waypoints = displayPositions; waypointRotations = displayRotations;
+            }
             gizmoWaypoints = waypoints.ToArray();
             gizmoWaypointRotations = waypointRotations.ToArray();
 
@@ -2495,17 +2984,37 @@ namespace RobotIK
                 if (existing == null) lineObject.transform.SetParent(transform, false);
                 pathRenderer = lineObject.GetComponent<LineRenderer>();
                 if (pathRenderer == null) pathRenderer = lineObject.AddComponent<LineRenderer>();
-                pathRenderer.useWorldSpace = true;
-                pathRenderer.widthMultiplier = 0.006f;
-                pathRenderer.startColor = Color.cyan;
-                pathRenderer.endColor = Color.cyan;
-                Shader shader = Shader.Find("HDRP/Unlit") ?? Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default");
-                if (shader != null) pathRenderer.material = new Material(shader);
             }
+            ConfigurePathRenderer();
             pathRenderer.positionCount = points.Count;
             pathRenderer.SetPositions(points.ToArray());
             UpdateWaypointLabels(waypoints);
             Physics.SyncTransforms();
+        }
+
+        private void ConfigurePathRenderer()
+        {
+            pathRenderer.useWorldSpace = true;
+            pathRenderer.alignment = LineAlignment.View;
+            pathRenderer.widthMultiplier = 0.008f;
+            pathRenderer.startColor = pathRenderer.endColor = Color.cyan;
+            pathRenderer.numCornerVertices = pathRenderer.numCapVertices = 6;
+            pathRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            pathRenderer.receiveShadows = false;
+            pathRenderer.allowOcclusionWhenDynamic = false;
+            if (pathMaterial == null)
+            {
+                Shader shader = Shader.Find("HDRP/Unlit") ?? Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default");
+                if (shader == null) return;
+                pathMaterial = new Material(shader) { name = "Opaque Planned TCP Path", hideFlags = HideFlags.DontSave };
+                if (pathMaterial.HasProperty("_UnlitColor")) pathMaterial.SetColor("_UnlitColor", Color.cyan);
+                if (pathMaterial.HasProperty("_Color")) pathMaterial.SetColor("_Color", Color.cyan);
+                foreach (string property in new[] { "_SurfaceType", "_AlphaCutoffEnable", "_OpaqueCullMode", "_CullMode" })
+                    if (pathMaterial.HasProperty(property)) pathMaterial.SetFloat(property, 0f);
+                if (pathMaterial.HasProperty("_DoubleSidedEnable")) pathMaterial.SetFloat("_DoubleSidedEnable", 1f);
+                if (shader.name == "HDRP/Unlit") UnityEngine.Rendering.HighDefinition.HDMaterial.ValidateMaterial(pathMaterial);
+            }
+            pathRenderer.sharedMaterial = pathMaterial;
         }
 
         private void UpdateEstimatedTravelTime()
@@ -2527,6 +3036,19 @@ namespace RobotIK
                     labelsObject.transform.SetParent(transform, false);
                     waypointLabelsRoot = labelsObject.transform;
                 }
+            }
+
+            // Recover the owned pool after a domain reload, then destroy excess
+            // sample labels from older versions instead of leaving hundreds hidden.
+            if (waypointLabels.Count == 0)
+                foreach (TextMesh label in waypointLabelsRoot.GetComponentsInChildren<TextMesh>(true))
+                    if (label.transform.parent == waypointLabelsRoot && label.name.StartsWith("Waypoint Label ")) waypointLabels.Add(label);
+            waypointLabels.RemoveAll(label => label == null);
+            while (waypointLabels.Count > waypoints.Count)
+            {
+                int last = waypointLabels.Count - 1;
+                GameObject owned = waypointLabels[last].gameObject;
+                waypointLabels.RemoveAt(last); owned.SetActive(false); Destroy(owned);
             }
 
             for (int i = 0; i < waypoints.Count; i++)
@@ -2667,6 +3189,8 @@ namespace RobotIK
                 message += $" Planning time: {FinishPlanningTimer()}.";
             if (plannerAlgorithm == PlannerAlgorithm.GridAStar && hasGridFailurePosition)
                 message += $" Failure location: {gizmoGridFailurePosition.x:F3}, {gizmoGridFailurePosition.y:F3}, {gizmoGridFailurePosition.z:F3} m.";
+            if (IsCartesianPlanner && hasCartesianFailurePosition)
+                message += $" Rejected TCP position: {cartesianFailurePosition.x:F3}, {cartesianFailurePosition.y:F3}, {cartesianFailurePosition.z:F3} m (world).";
             Status = message;
             Debug.LogWarning($"Motion planner: {message}", this);
 #if UNITY_EDITOR
@@ -2677,6 +3201,12 @@ namespace RobotIK
 
         private void ClearGridGizmoData()
         {
+            automaticLinearWaypoints.Clear();
+            hasCartesianFailurePosition = false;
+            cartesianFailureLabel = null;
+#if UNITY_EDITOR
+            cartesianDiagnosticScroll = Vector2.zero;
+#endif
             gizmoGridOccupiedCells = Array.Empty<Vector3>();
             gizmoGridRoutePoints = Array.Empty<Vector3>();
             gizmoGridFailurePosition = Vector3.zero;
@@ -2749,8 +3279,96 @@ namespace RobotIK
             public string firstCollisionPair;
         }
 
+#if UNITY_EDITOR
+        private void DrawCartesianFailureDiagnostics()
+        {
+            var scene = UnityEditor.SceneView.currentDrawingSceneView;
+            if (scene == null || scene.camera == null) return;
+            Vector3 anchor = UnityEditor.HandleUtility.WorldToGUIPointWithDepth(cartesianFailurePosition);
+            if (anchor.z <= 0f) return;
+            float viewportWidth = scene.camera.pixelWidth / UnityEditor.EditorGUIUtility.pixelsPerPoint;
+            float viewportHeight = scene.camera.pixelHeight / UnityEditor.EditorGUIUtility.pixelsPerPoint;
+            if (viewportWidth < 100f || viewportHeight < 100f) return;
+            float width = Mathf.Min(520f, viewportWidth - 24f);
+            float textWidth = width - 36f;
+            var style = new GUIStyle(UnityEditor.EditorStyles.label)
+            {
+                wordWrap = true,
+                richText = false,
+                fontSize = 12,
+                padding = new RectOffset(4, 4, 4, 4)
+            };
+            style.normal.textColor = Color.white;
+            // Break between candidates and allow long hierarchy paths to wrap too.
+            string diagnostic = (cartesianFailureLabel ?? string.Empty)
+                .Replace("; ", ";\n").Replace("/", "/ ");
+            var content = new GUIContent("MoveL rejected TCP position\n" + diagnostic);
+            float contentHeight = style.CalcHeight(content, textWidth);
+            float height = Mathf.Min(contentHeight + 16f, viewportHeight - 32f);
+            var panel = new Rect(
+                Mathf.Clamp(anchor.x + 18f, 12f, viewportWidth - width - 12f),
+                Mathf.Clamp(anchor.y + 18f, 12f, viewportHeight - height - 12f), width, height);
+            UnityEditor.Handles.BeginGUI();
+            try
+            {
+                UnityEditor.EditorGUI.DrawRect(panel, new Color(0.08f, 0.08f, 0.08f, 0.94f));
+                var scrollRect = new Rect(panel.x + 6f, panel.y + 6f, panel.width - 12f, panel.height - 12f);
+                cartesianDiagnosticScroll = GUI.BeginScrollView(scrollRect, cartesianDiagnosticScroll,
+                    new Rect(0f, 0f, textWidth, contentHeight));
+                GUI.Label(new Rect(0f, 0f, textWidth, contentHeight), content, style);
+                GUI.EndScrollView();
+            }
+            finally { UnityEditor.Handles.EndGUI(); }
+        }
+#endif
+        // Show requested MoveL geometry even before a successful plan exists.
+        private void DrawCartesianWaypointRoute()
+        {
+            if (plannerAlgorithm != PlannerAlgorithm.CartesianLinear || startPose == null || endTarget == null) return;
+            Color previous = Gizmos.color;
+            Gizmos.color = new Color(1f, 0.35f, 0.15f);
+            Transform from = startPose;
+            if (intermediateWaypoints != null)
+                for (int i = 0; i < intermediateWaypoints.Length; i++)
+                {
+                    Transform point = intermediateWaypoints[i];
+                    if (point == null) continue;
+                    Gizmos.DrawLine(from.position, point.position);
+                    Gizmos.DrawSphere(point.position, 0.015f);
+                    Gizmos.DrawWireSphere(point.position, 0.025f);
+#if UNITY_EDITOR
+                    UnityEditor.Handles.Label(point.position + Vector3.up * 0.035f, $"WP{i + 1}: {point.name}");
+#endif
+                    from = point;
+                }
+            Gizmos.DrawLine(from.position, endTarget.position);
+            Gizmos.color = previous;
+        }
         private void OnDrawGizmos()
         {
+            DrawCartesianWaypointRoute();
+            if (plannerAlgorithm == PlannerAlgorithm.CartesianLinear && CurrentMotionState != MotionState.Failed)
+                for (int i = 0; i < automaticLinearWaypoints.Count; i++)
+                {
+                    Gizmos.color = Color.yellow;
+                    Gizmos.DrawSphere(automaticLinearWaypoints[i], 0.018f);
+#if UNITY_EDITOR
+                    UnityEditor.Handles.Label(automaticLinearWaypoints[i] + Vector3.up * 0.04f, $"Auto WP{i + 1}");
+#endif
+                }
+            if (hasCartesianFailurePosition && IsCartesianPlanner)
+            {
+                Color previousColor = Gizmos.color;
+                Gizmos.color = Color.red;
+                Gizmos.DrawSphere(cartesianFailurePosition, 0.012f);
+                Gizmos.DrawWireSphere(cartesianFailurePosition, 0.03f);
+                Gizmos.DrawLine(cartesianFailurePosition - Vector3.right * 0.05f, cartesianFailurePosition + Vector3.right * 0.05f);
+                Gizmos.DrawLine(cartesianFailurePosition - Vector3.up * 0.05f, cartesianFailurePosition + Vector3.up * 0.05f);
+#if UNITY_EDITOR
+                DrawCartesianFailureDiagnostics();
+#endif
+                Gizmos.color = previousColor;
+            }
             if (adaptiveGoalUsed)
             {
                 Gizmos.color = new Color(1f, 0.7f, 0.1f);
@@ -2818,6 +3436,24 @@ namespace RobotIK
                     DrawTcpAxis(gizmoWaypoints[i], tcpRotation * Vector3.forward, axisLength, Color.blue);
                 }
             }
+#if UNITY_EDITOR
+            // A solid, depth-independent diagnostic overlay stays visible while
+            // orbiting the Scene camera, including portions behind scene geometry.
+            if (UnityEditor.SceneView.currentDrawingSceneView != null)
+            {
+                var previousDepth = UnityEditor.Handles.zTest;
+                Color previousColor = UnityEditor.Handles.color;
+                try
+                {
+                    UnityEditor.Handles.zTest = UnityEngine.Rendering.CompareFunction.Always;
+                    UnityEditor.Handles.color = new Color(0.02f, 0.04f, 0.05f, 1f);
+                    UnityEditor.Handles.DrawAAPolyLine(7f, gizmoPath);
+                    UnityEditor.Handles.color = Color.cyan;
+                    UnityEditor.Handles.DrawAAPolyLine(4f, gizmoPath);
+                }
+                finally { UnityEditor.Handles.zTest = previousDepth; UnityEditor.Handles.color = previousColor; }
+            }
+#endif
         }
 
 #if UNITY_EDITOR
@@ -2889,3 +3525,17 @@ namespace RobotIK
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+

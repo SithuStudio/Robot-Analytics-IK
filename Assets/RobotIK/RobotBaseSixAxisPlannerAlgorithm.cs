@@ -11,7 +11,7 @@ namespace RobotIK
     /// </summary>
     public sealed class RobotBaseSixAxisPlannerAlgorithm
     {
-        public enum Kind { RrtConnectFast, RrtConnectOptimized, CartesianArc, GridAStar, JointSpacePrm, InformedRrtStar }
+        public enum Kind { RrtConnectFast, RrtConnectOptimized, CartesianArc, GridAStar, JointSpacePrm, InformedRrtStar, CartesianLinear }
 
         /// <summary>Scene/query services required by planning, independent of Unity lifecycle.</summary>
         public sealed class World
@@ -20,7 +20,14 @@ namespace RobotIK
             public Func<Vector3, Quaternion, List<float[]>> SolveIk;
             public Func<float[], Vector3> GetTcpPosition;
             public Func<float[], Quaternion> GetTcpRotation;
+            public Func<float[], double[,]> GetJacobian;
             public Func<float[], bool> IsConfigurationInCollision;
+            // Optional batched state query for a worker using main-thread scene services.
+            public Func<float[], ConfigurationCheck> EvaluateConfiguration;
+            public Func<IReadOnlyList<float[]>, ConfigurationCheck[]> EvaluateConfigurationBatch;
+            // Optional diagnostics for the most recent failed collision query.
+            public Func<string> GetLastCollisionDescription;
+            public Func<Vector3> GetLastCollisionTcpPosition;
             public Func<float[]> RandomConfiguration;
             public Func<float[], float[], float> MotionCost;
             public Func<float[], float[], float> RouteCost;
@@ -31,6 +38,9 @@ namespace RobotIK
             // Cost in world meters per degree, compatible with TCP travel cost.
             public float Joint6TravelCostPerDegree;
             public CancellationToken CancellationToken;
+            // Optional active-computation clock. Worker bridges exclude time waiting
+            // for Unity to service requests, but include the scene query execution.
+            public Func<double> PlanningElapsedSeconds;
             public Func<Vector3, float, bool> IsCartesianPointBlocked;
             public Vector2[] JointLimits;
             public Bounds Workspace;
@@ -44,17 +54,47 @@ namespace RobotIK
             public int MaximumGridNodes = 20000;
             public int MaximumGridRouteAttempts = 8;
             public float GoalBias = 0.08f;
+            // Pose-target MoveL may choose a continuous endpoint IK branch. False keeps exact joint-goal semantics.
+            public bool LinearAllowAlternateGoalConfiguration;
+            public bool LinearAutomaticWaypoints;
+            public int LinearWaypointMaximumEdges = 80;
+            public float LinearWaypointSearchSeconds = 15f;
+            public bool LinearOptimizePath = true;
+            public bool LinearForceLiftTraverseDescend;
+            public bool LinearExploreSpatialCorridors = true;
+            public CartesianOccupancyGrid LinearOccupancyGrid;
+            public string LinearOccupancyError;
+            public int LinearGridMaximumNodes = 50000;
+            public int LinearGridMaximumRouteAttempts = 12;
+            public float LinearMinimumLiftMeters = 0.15f;
+            public float LinearOptimizationSeconds = 4f;
+            public Func<bool> OptimizationShouldStop;
+            public Bounds[] LinearRoutingObstacles;
+            public float LinearCharacteristicLengthMeters = 1f;
+            public float LinearMinimumSingularValueRatio = 0.001f;
             public float ArcStepMeters = 0.04f;
             public System.Random Random = new System.Random(1);
         }
 
+        public sealed class ConfigurationCheck
+        {
+            public Vector3 Position;
+            public Quaternion Rotation;
+            public bool Collision;
+            public string CollisionDescription;
+            public string SingularityFailure;
+        }
+
         public sealed class Result
         {
+            public readonly List<Vector3> AutomaticWaypoints = new List<Vector3>();
             public readonly List<float[]> JointPath = new List<float[]>();
             public int Iterations;
             public int RoutesTried;
             public Vector3 FailurePosition;
+            public bool HasFailurePosition;
             public string FailureReason;
+            public string RoutingDiagnostics = string.Empty;
         }
 
         /// <summary>Immutable input snapshot for background-only occupancy search.</summary>
@@ -97,6 +137,7 @@ namespace RobotIK
             {
                 case Kind.RrtConnectFast: return new FastRrtConnectPlanner(world);
                 case Kind.RrtConnectOptimized: return new OptimizedRrtConnectPlanner(world);
+                case Kind.CartesianLinear: return new CartesianLinearPlanner(world);
                 case Kind.CartesianArc: return new CartesianArcPlanner(world);
                 case Kind.GridAStar: return new GridAStarPlanner(world);
                 case Kind.JointSpacePrm: return new JointSpacePrmPlanner(world);
@@ -110,3 +151,9 @@ namespace RobotIK
             CreatePlanner(kind).TryPlan(start, goal, startPosition, startRotation, goalPosition, goalRotation, out result);
     }
 }
+
+
+
+
+
+

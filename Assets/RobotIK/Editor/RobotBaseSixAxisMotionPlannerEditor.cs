@@ -46,7 +46,8 @@ namespace RobotIK.Editor
             using (new EditorGUI.DisabledScope(true))
             {
                 if (plannerTarget.IsRrtSearchInProgress)
-                    EditorGUILayout.IntField("Current Search Iteration",
+                    EditorGUILayout.IntField(plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianLinear ||
+                        plannerTarget.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianArc ? "Configuration Checks" : "Current Search Iteration",
                         plannerTarget.CurrentRrtSearchIterations);
                 // Grid and Cartesian diagnostics are hidden with their Inspector settings.
                 EditorGUILayout.IntField("Planning Iterations", plannerTarget.PlanningIterations);
