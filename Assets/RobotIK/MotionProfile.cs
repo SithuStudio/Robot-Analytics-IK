@@ -17,6 +17,7 @@ namespace RobotIK
         [Serializable]
         public sealed class Settings
         {
+            public bool EnableCornerSmoothing = true;
             public float LinearSpeed = 500f;
             public float RotationSpeedDegree = 75f;
             public float TcpAccelerationMillimetersPerSecondSquared = 200f;
@@ -193,6 +194,7 @@ namespace RobotIK
             for (int i = 1; i < points.Count - 1; i++)
             {
                 if (IsStraightPathCorner(points[i - 1], points[i], points[i + 1])) continue;
+                if (!settings.EnableCornerSmoothing) { RetainedSharpCorners++; continue; }
                 corners[i] = TrySmoothPathCorner(points[i - 1], points[i], points[i + 1]);
                 if (corners[i] != null) SmoothedPathCorners++;
                 else RetainedSharpCorners++;
@@ -376,3 +378,4 @@ namespace RobotIK
 
     }
 }
+

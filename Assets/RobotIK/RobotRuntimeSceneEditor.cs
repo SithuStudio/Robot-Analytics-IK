@@ -35,6 +35,8 @@ namespace RobotIK
         private DropdownField objects;
         private VisualElement tool;
         private Button moveTool, rotateTool;
+        private VisualElement waypointControls;
+        private Button addWaypoint, removeWaypoint, waypointEarlier, waypointLater;
         private Label hint;
         private readonly FloatField[] positionFields = new FloatField[3], rotationFields = new FloatField[3];
         private bool editing, syncingFields, dragging;
@@ -102,6 +104,26 @@ namespace RobotIK
             objects.AddToClassList("rm-edit-dropdown");
             objects.RegisterValueChangedCallback(_ => { if (!syncingFields && objects.index >= 0) SelectObject(targets[objects.index]); });
             foldout.Add(objects);
+            waypointControls = new VisualElement();
+            waypointControls.Add(new Label("MoveL route waypoints"));
+            var waypointHelp = new Label("Insert after Start or the selected waypoint. Move markers above/around obstacles, then reset & plan. Orange segments are a route preview, not a validated path.");
+            waypointHelp.style.whiteSpace = WhiteSpace.Normal;
+            waypointControls.Add(waypointHelp);
+            addWaypoint = new Button(() =>
+            {
+                Transform marker = planner.AddIntermediateWaypoint(SelectedObject);
+                if (marker == null) return;
+                RefreshObjects(); SelectObject(marker);
+            }) { text = "Add waypoint after selected" };
+            removeWaypoint = new Button(() =>
+            {
+                if (planner.RemoveIntermediateWaypoint(SelectedObject)) RefreshObjects();
+            }) { text = "Remove selected from route" };
+            waypointEarlier = new Button(() => MoveWaypoint(-1)) { text = "Move earlier in route" };
+            waypointLater = new Button(() => MoveWaypoint(1)) { text = "Move later in route" };
+            waypointControls.Add(addWaypoint); waypointControls.Add(removeWaypoint);
+            waypointControls.Add(waypointEarlier); waypointControls.Add(waypointLater);
+            foldout.Add(waypointControls);
             foldout.Add(new Label("Transform tool"));
             tool = new VisualElement(); tool.AddToClassList("rm-tool-options");
             moveTool = new Button(() => Tool = TransformTool.Move) { text = "Move", name = "scene-move-tool" };
@@ -256,8 +278,31 @@ namespace RobotIK
                 : "Enable editing to reposition targets and obstacles.";
         }
 
+        private void MoveWaypoint(int offset)
+        {
+            Transform marker = SelectedObject;
+            if (!planner.ReorderIntermediateWaypoint(marker, offset)) return;
+            RefreshObjects(); SelectObject(marker);
+        }
+
+        private void SyncWaypointControls()
+        {
+            if (waypointControls == null || planner == null) return;
+            waypointControls.style.display = planner.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianLinear
+                ? DisplayStyle.Flex : DisplayStyle.None;
+            bool available = editing && !planner.IsBusy;
+            int index = -1;
+            var points = planner.IntermediateWaypoints;
+            if (points != null)
+                for (int i = 0; i < points.Count; i++) if (points[i] == SelectedObject) { index = i; break; }
+            addWaypoint.SetEnabled(available);
+            removeWaypoint.SetEnabled(available && index >= 0);
+            waypointEarlier.SetEnabled(available && index > 0);
+            waypointLater.SetEnabled(available && index >= 0 && index + 1 < points.Count);
+        }
         private void SyncFields()
         {
+            SyncWaypointControls();
             if (positionFields[0] == null) return;
             syncingFields = true;
             Vector3 position = SelectedObject != null ? SelectedObject.position * 1000f : Vector3.zero;
@@ -275,6 +320,7 @@ namespace RobotIK
 
         private void LateUpdate()
         {
+            SyncWaypointControls();
             bool available = editing && planner != null && !planner.IsBusy && SelectedObject != null && planner.isActiveAndEnabled;
             if (gizmoRoot != null) gizmoRoot.SetActive(available);
             handleOverlay?.MarkDirtyRepaint();
@@ -425,3 +471,5 @@ namespace RobotIK
         }
     }
 }
+
+
