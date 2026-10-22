@@ -33,3 +33,9 @@ crashlytics-build.properties
 
 # Asset Store tools
 /[Aa]ssets/AssetStoreTools*
+Packages/manifest.json
+Packages/manifest.json
+Packages/packages-lock.json
+ProjectSettings/Packages/com.unity.testtools.codecoverage/Settings.json
+ProjectSettings/ShaderGraphSettings.asset
+ProjectSettings/VersionControlSettings.asset
