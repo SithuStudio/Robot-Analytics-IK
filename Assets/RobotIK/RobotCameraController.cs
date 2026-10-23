@@ -19,6 +19,8 @@ namespace RobotIK
         [SerializeField, Min(0.01f)] private float orbitDegreesPerPixel = 0.2f;
         [SerializeField, Min(0.01f)] private float panSensitivity = 1f;
         [SerializeField, Min(0.01f)] private float zoomSensitivity = 0.15f;
+        [Tooltip("Limit accumulated wheel input in a single frame to prevent sudden zoom jumps.")]
+        [SerializeField, Range(0.1f, 3f)] private float maximumWheelStepsPerFrame = 1f;
         [SerializeField, Min(0.01f)] private float moveSpeedMetersPerSecond = 1.5f;
         [SerializeField, Min(1f)] private float fastMoveMultiplier = 3f;
         [SerializeField, Min(0.01f)] private float minimumDistance = 0.15f;
@@ -30,6 +32,7 @@ namespace RobotIK
         private float initialOrthographicSize;
         private bool initialized, hasPointer, navigating;
         private Vector2 previousPointer;
+        private readonly CameraWheelInputGuard wheelInput = new CameraWheelInputGuard();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetRegistration() => SceneManager.sceneLoaded -= OnSceneLoaded;
@@ -53,11 +56,17 @@ namespace RobotIK
         private void OnEnable()
         {
             Initialize();
-            hasPointer = navigating = false;
+            ResetNavigationInput();
         }
 
-        private void OnDisable() { hasPointer = navigating = false; }
-        private void OnApplicationFocus(bool focus) { hasPointer = navigating = false; }
+        private void OnDisable() => ResetNavigationInput();
+        private void OnApplicationFocus(bool focus) => ResetNavigationInput();
+
+        private void ResetNavigationInput()
+        {
+            hasPointer = navigating = false;
+            wheelInput.Block(Time.unscaledTimeAsDouble);
+        }
 
         private void Initialize()
         {
@@ -78,23 +87,25 @@ namespace RobotIK
 
         private void LateUpdate()
         {
-            if (RobotRuntimeSceneEditor.IsManipulatingAny) { hasPointer = navigating = false; return; }
-            if (!ReadInput(out NavigationInput input)) { hasPointer = navigating = false; return; }
+            if (!Application.isFocused || RobotRuntimeSceneEditor.IsManipulatingAny)
+            { ResetNavigationInput(); return; }
+            if (!ReadInput(out NavigationInput input)) { ResetNavigationInput(); return; }
             Vector2 delta = hasPointer ? input.Position - previousPointer : Vector2.zero;
             previousPointer = input.Position;
             hasPointer = true;
             if (!view.pixelRect.Contains(input.Position) || RobotMotionControls.IsPointerOverControls(input.Position))
-            { navigating = false; return; }
+            { navigating = false; wheelInput.Block(Time.unscaledTimeAsDouble); return; }
             if (input.OrbitDown || input.PanDown)
             {
                 RobotMotionControls.ReleaseControlFocus();
                 navigating = true;
                 delta = Vector2.zero;
             }
-            if (RobotMotionControls.IsEditingControls()) { navigating = false; return; }
-            if (input.Reset) { ResetView(); return; }
-            if (input.Focus) { FocusTarget(); return; }
-            if (Mathf.Abs(input.Scroll) > 0.0001f) Zoom(input.Scroll);
+            if (RobotMotionControls.IsEditingControls())
+            { navigating = false; wheelInput.Block(Time.unscaledTimeAsDouble); return; }
+            if (input.Reset) { ResetView(); wheelInput.Block(Time.unscaledTimeAsDouble); return; }
+            if (input.Focus) { FocusTarget(); wheelInput.Block(Time.unscaledTimeAsDouble); return; }
+            if (wheelInput.Accept(input.Scroll, Time.unscaledTimeAsDouble)) Zoom(input.Scroll);
             if (!input.OrbitHeld && !input.PanHeld) navigating = false;
             if (!navigating) return;
             if (input.PanHeld || input.Fast) Pan(delta);
@@ -128,7 +139,9 @@ namespace RobotIK
         public void Zoom(float wheelSteps)
         {
             Initialize();
-            float factor = Mathf.Exp(-Mathf.Clamp(wheelSteps, -100f, 100f) * zoomSensitivity);
+            float steps = CameraWheelInputGuard.ClampSteps(wheelSteps, maximumWheelStepsPerFrame);
+            if (steps == 0f) return;
+            float factor = Mathf.Exp(-steps * zoomSensitivity);
             float near = Mathf.Max(0.01f, minimumDistance);
             float far = Mathf.Max(near, maximumDistance);
             if (view.orthographic) view.orthographicSize = Mathf.Clamp(view.orthographicSize * factor, near, far);
@@ -227,6 +240,43 @@ namespace RobotIK
                 (Input.GetKey(KeyCode.W) ? 1 : 0) - (Input.GetKey(KeyCode.S) ? 1 : 0));
 #endif
             return true;
+        }
+    }
+
+    // A wheel gesture that started over UI must become quiet before the scene
+    // can claim it. Merely moving the pointer off the panel cannot transfer its
+    // remaining wheel/trackpad momentum to the camera.
+    internal sealed class CameraWheelInputGuard
+    {
+        private const double QuietSeconds = 0.15;
+        private double blockedUntil;
+        private bool ready;
+
+        public void Block(double now)
+        {
+            ready = false;
+            blockedUntil = now + QuietSeconds;
+        }
+
+        public bool Accept(float steps, double now)
+        {
+            if (float.IsNaN(steps) || float.IsInfinity(steps)) { Block(now); return false; }
+            bool scrolling = System.Math.Abs(steps) > 0.0001f;
+            if (!ready)
+            {
+                if (scrolling) blockedUntil = now + QuietSeconds;
+                else if (now >= blockedUntil) ready = true;
+                return false;
+            }
+            return scrolling;
+        }
+
+        public static float ClampSteps(float steps, float maximum)
+        {
+            if (float.IsNaN(steps) || float.IsInfinity(steps)) return 0f;
+            if (float.IsNaN(maximum) || float.IsInfinity(maximum)) maximum = 1f;
+            float limit = System.Math.Max(0.1f, System.Math.Min(3f, maximum));
+            return System.Math.Max(-limit, System.Math.Min(limit, steps));
         }
     }
 }

@@ -36,7 +36,8 @@ namespace RobotIK
 
     internal static class PathDisplayWaypoints
     {
-        // Display simplification only. No execution or collision samples are removed.
+        // Select geometric anchors for display or blend windows. Callers retain the
+        // original execution and collision samples; these indices are not a new path.
         public static int[] Select(IReadOnlyList<Vector3> positions, IReadOnlyList<Quaternion> rotations,
             IReadOnlyList<Vector3> required = null)
         {

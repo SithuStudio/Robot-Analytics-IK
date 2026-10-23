@@ -56,7 +56,7 @@ namespace RobotIK
             visited[Key(0, start)] = 0f;
             var timer = System.Diagnostics.Stopwatch.StartNew();
             double budgetStart = world.PlanningElapsedSeconds?.Invoke() ?? 0;
-            double BudgetElapsed() => world.PlanningElapsedSeconds == null
+            double BudgetElapsed() => linear.PoseRetryExpired ? double.PositiveInfinity : world.PlanningElapsedSeconds == null
                 ? timer.Elapsed.TotalSeconds : world.PlanningElapsedSeconds() - budgetStart;
             int tested = 0;
             string lastFailure = null;

@@ -25,10 +25,10 @@ namespace RobotIK
         }
         public bool TryPlan(float[] start,float[] goal,Vector3 a,Quaternion ar,Vector3 b,Quaternion br,Result result)
         {
-            var grid=world.LinearOccupancyGrid;
+            var grid=linear.OccupancyGrid;
             var timer=System.Diagnostics.Stopwatch.StartNew();
             double begun=world.PlanningElapsedSeconds?.Invoke()??0;
-            bool Stop()=> (world.PlanningElapsedSeconds==null?timer.Elapsed.TotalSeconds:world.PlanningElapsedSeconds()-begun)>=world.LinearWaypointSearchSeconds;
+            bool Stop()=> linear.PoseRetryExpired || (world.PlanningElapsedSeconds==null?timer.Elapsed.TotalSeconds:world.PlanningElapsedSeconds()-begun)>=world.LinearWaypointSearchSeconds;
             var penalties=new Dictionary<int,float>();
             var rejectedRoutes=new Dictionary<string,RejectedRoute>();
             int checks=0, expanded=0, attempts=0;

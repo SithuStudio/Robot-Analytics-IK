@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -26,7 +27,8 @@ namespace RobotIK
         private ScrollView scrollPanel;
         private PanelSettings ownedPanelSettings;
         private VisualElement root, settingsContainer;
-        private VisualElement panelHeader, panelBody;
+        private VisualElement panelHeader, panelBody, windowPanel, panelTabs, actionBar;
+        private Foldout ikDetails, feedbackDetails, feedbackSummary;
         private Button minimizeButton;
         private bool minimized, draggingPanel, hasPanelPosition;
         private int dragPointerId;
@@ -35,18 +37,26 @@ namespace RobotIK
         public bool IsMinimized => minimized;
         public Vector2 PanelPosition => panelPosition;
         private Label stateLabel, stateDot, message, feedback, iterations, planningTime, travelTime;
+        private VisualElement endpointStep, planStep, motionStep;
+        private Label endpointStepTitle, endpointStepDetail, planStepTitle, planStepDetail, motionStepTitle, motionStepDetail, feedbackNext;
         private DropdownField algorithm;
-        private Button planButton, replayButton, themeButton;
+        private VisualElement plannerMenuRoot;
+        private Button planButton, replayButton, themeButton, headerStopButton;
+        private Button startPoseButton, endPoseButton;
+        private Toggle checkIkBeforePlan;
+        private Label startIkResult, endIkResult, startIkCompact, endIkCompact;
+        private string previousStartIkSummary, previousEndIkSummary;
         private ColorTheme appliedTheme;
         private readonly List<Action<MotionProfile.Settings>> synchronize = new List<Action<MotionProfile.Settings>>();
         private readonly RobotBaseSixAxisMotionPlanner.PlannerAlgorithm[] algorithms =
         {
+            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianLinear,
+            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianArc,
+            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.GridAStar,
             RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.RRTConnectOptimized,
             RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.RRTConnectFast,
             RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.JointSpacePrm,
-            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.InformedRrtStar,
-            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianArc,
-            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.GridAStar
+            RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.InformedRrtStar
         };
         private MotionProfile.Settings draft;
         private bool pendingSettings, syncing, algorithmChanged;
@@ -74,6 +84,7 @@ namespace RobotIK
 
         private void OnDisable()
         {
+            plannerMenuRoot?.RemoveFromHierarchy();
             activePanels.Remove(this);
             EndPanelDrag();
             pendingSettings = false;
@@ -100,6 +111,7 @@ namespace RobotIK
                 Vector2 point = RuntimePanelUtils.ScreenToPanel(controls.root.panel,
                     new Vector2(screenPosition.x, Screen.height - screenPosition.y));
                 VisualElement picked = controls.root.panel.Pick(point);
+                if (picked != null && controls.plannerMenuRoot != null && controls.plannerMenuRoot.Contains(picked)) return true;
                 if (picked != null && picked != controls.root && controls.root.Contains(picked)) return true;
             }
             return false;
@@ -153,14 +165,11 @@ namespace RobotIK
             draft = planner.GetMotionSettings();
             pendingSettings = false;
 
-            var panel = new ScrollView(ScrollViewMode.Vertical);
-            scrollPanel = panel;
+            var panel = Element("rm-panel-content");
+            windowPanel = panel;
             panel.AddToClassList("rm-panel");
-            panel.contentContainer.AddToClassList("rm-panel-content");
-            panel.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            panel.verticalScrollerVisibility = ScrollerVisibility.Auto;
             root.Add(panel);
-            panel.RegisterCallback<GeometryChangedEvent>(_ => ConstrainPanelToViewport());
+            panel.RegisterCallback<GeometryChangedEvent>(_ => { UpdateScrollHeight(); ConstrainPanelToViewport(); });
             root.UnregisterCallback<GeometryChangedEvent>(ResizePanel);
             root.RegisterCallback<GeometryChangedEvent>(ResizePanel);
 
@@ -179,7 +188,6 @@ namespace RobotIK
             header.RegisterCallback<PointerCaptureOutEvent>(_ => draggingPanel = false);
             var heading = Element("rm-heading");
             heading.Add(Text("Robot motion", "rm-title"));
-            heading.Add(Text("Six-axis planner", "rm-subtitle"));
             header.Add(heading);
             var state = Element("rm-state");
             stateDot = Text("", "rm-state-dot");
@@ -190,6 +198,9 @@ namespace RobotIK
             themeButton = new Button(() => SetTheme(colorTheme == ColorTheme.Light ? ColorTheme.Dark : ColorTheme.Light));
             themeButton.AddToClassList("rm-theme-button");
             var windowActions = Element("rm-window-actions");
+            headerStopButton = new Button(StopImmediately) { text = "Stop", name = "header-stop-motion" };
+            headerStopButton.AddToClassList("rm-header-stop"); windowActions.Add(headerStopButton);
+            headerStopButton.style.display = DisplayStyle.None;
             windowActions.Add(themeButton);
             minimizeButton = new Button(() => SetMinimized(!minimized));
             minimizeButton.AddToClassList("rm-minimize-button");
@@ -200,20 +211,43 @@ namespace RobotIK
             panelBody = Element("rm-panel-body");
             panel.Add(panelBody);
             var tabs = Element("rm-tabs"); panelBody.Add(tabs);
+            panelTabs = tabs;
             motionTab = new Button(() => SetActiveTab(ControlsTab.Motion)) { text = "Motion", name = "motion-tab" };
             sceneTab = new Button(() => SetActiveTab(ControlsTab.SceneEditor)) { text = "Scene editor", name = "scene-editor-tab" };
             motionTab.AddToClassList("rm-tab"); sceneTab.AddToClassList("rm-tab");
             tabs.Add(motionTab); tabs.Add(sceneTab);
-            motionPage = Element("rm-motion-page"); motionPage.name = "motion-page"; panelBody.Add(motionPage);
-            scenePage = Element("rm-scene-page"); scenePage.name = "scene-editor-page"; panelBody.Add(scenePage);
+            scrollPanel = new ScrollView(ScrollViewMode.Vertical);
+            scrollPanel.AddToClassList("rm-body-scroll");
+            scrollPanel.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+            scrollPanel.verticalScrollerVisibility = ScrollerVisibility.Auto;
+            panelBody.Add(scrollPanel);
+            motionPage = Element("rm-motion-page"); motionPage.name = "motion-page"; scrollPanel.Add(motionPage);
+            scenePage = Element("rm-scene-page"); scenePage.name = "scene-editor-page"; scrollPanel.Add(scenePage);
 
             settingsContainer = Element("rm-settings"); motionPage.Add(settingsContainer);
-            settingsContainer.Add(Text("Planner algorithm", "rm-field-label"));
+            var plannerRow = Element("rm-planner-row"); settingsContainer.Add(plannerRow);
+            plannerRow.Add(Text("Planner", "rm-field-label"));
             algorithm = new DropdownField(new List<string>
             {
-                "Optimized RRT-Connect", "Fast RRT-Connect", "Joint-Space PRM", "Informed RRT*", "Cartesian Arc", "3D Grid A*", "Cartesian Linear (MoveL)"
+                "Cartesian Linear (MoveL)", "Cartesian Arc", "3D Grid A*", "Optimized RRT-Connect", "Fast RRT-Connect", "Joint-Space PRM", "Informed RRT*"
             }, Array.IndexOf(algorithms, planner.SelectedPlanner));
+            algorithm.name = "planner-algorithm";
             algorithm.AddToClassList("rm-algorithm");
+            algorithm.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.button != 0) return;
+                evt.StopImmediatePropagation();
+                ShowPlannerMenu();
+            }, TrickleDown.TrickleDown);
+            algorithm.RegisterCallback<PointerMoveEvent>(evt =>
+            {
+                if ((evt.pressedButtons & 1) != 0) evt.StopImmediatePropagation();
+            }, TrickleDown.TrickleDown);
+            algorithm.RegisterCallback<NavigationSubmitEvent>(evt =>
+            {
+                evt.StopImmediatePropagation();
+                ShowPlannerMenu();
+            }, TrickleDown.TrickleDown);
             algorithm.RegisterValueChangedCallback(evt =>
             {
                 if (syncing || planner.IsBusy) return;
@@ -223,15 +257,48 @@ namespace RobotIK
                     message.text = "Planner changed. Reset & plan to create a new route.";
                 }
             });
-            settingsContainer.Add(algorithm);
+            plannerRow.Add(algorithm);
+            var endpointChecks = Element("rm-endpoint-checks"); settingsContainer.Add(endpointChecks);
+            var poseHeading = Element("rm-pose-heading"); endpointChecks.Add(poseHeading);
+            poseHeading.Add(Text("POSE CHECK", "rm-section-label"));
+            checkIkBeforePlan = new Toggle("Check before planning") { name = "check-endpoint-ik-before-plan", value = planner.CheckEndpointIkBeforePlanning,
+                tooltip = "Check Start and End IK before planning. Planning always retains mandatory collision and clearance validation." };
+            checkIkBeforePlan.AddToClassList("rm-edit-toggle");
+            checkIkBeforePlan.RegisterValueChangedCallback(evt => planner.CheckEndpointIkBeforePlanning = evt.newValue);
+            poseHeading.Add(checkIkBeforePlan);
+            var poseButtons = Element("rm-pose-buttons"); endpointChecks.Add(poseButtons);
+            startPoseButton = new Button(() =>
+            {
+                if (!ApplyPendingSettings()) return;
+                planner.ShowEndpointIkPose(true);
+                RefreshStatus();
+            }) { name = "show-start-pose", tooltip = "Show Start IK pose, highlighting colliding parts in red." };
+            endPoseButton = new Button(() =>
+            {
+                if (!ApplyPendingSettings()) return;
+                planner.ShowEndpointIkPose(false);
+                RefreshStatus();
+            }) { name = "show-end-pose", tooltip = "Show End IK pose, highlighting colliding parts in red." };
+            startPoseButton.Add(Text("Start Pose", "rm-pose-caption"));
+            startIkCompact = Text("Not checked", "rm-pose-state"); startPoseButton.Add(startIkCompact);
+            endPoseButton.Add(Text("End Pose", "rm-pose-caption"));
+            endIkCompact = Text("Not checked", "rm-pose-state"); endPoseButton.Add(endIkCompact);
+            startPoseButton.AddToClassList("rm-secondary"); poseButtons.Add(startPoseButton);
+            endPoseButton.AddToClassList("rm-secondary"); poseButtons.Add(endPoseButton);
+            ikDetails = new Foldout { text = "IK details & help", value = false, name = "endpoint-ik-details" };
+            ikDetails.AddToClassList("rm-ik-details"); endpointChecks.Add(ikDetails);
+            startIkResult = Text(planner.StartIkSummary, "rm-ik-result"); ikDetails.Add(startIkResult);
+            endIkResult = Text(planner.EndIkSummary, "rm-ik-result"); ikDetails.Add(endIkResult);
+            ikDetails.Add(Text("Pose buttons show the robot at the selected IK solution. Red parts indicate actual obstacle contact. Unreachable poses leave the robot unchanged. Results describe the last check.", "rm-planning-hint"));
+            ikDetails.Add(Text("Accuracy rounds corners within the selected distance; unsafe curves shrink or stay sharp. Start and End stay exact. Clearance is the minimum robot-to-obstacle gap enforced during planning.", "rm-planning-hint"));
+            previousStartIkSummary = previousEndIkSummary = null;
 
-            AddNumberControl(settingsContainer, "Motion speed", "mm/s", 1000f,
+            AddNumberControl(settingsContainer, "Speed", "mm/s", 1000f,
                 s => s.LinearSpeed, (s, v) => s.LinearSpeed = v, "Slower", "Faster");
-            AddNumberControl(settingsContainer, "Path accuracy", "mm", 500f,
+            AddNumberControl(settingsContainer, "Accuracy", "mm", 500f,
                 s => s.PathAccuracyMillimeters, (s, v) => s.PathAccuracyMillimeters = v, "Closer to waypoints", "Wider curves");
-            AddPlanningNumber(settingsContainer, "Minimum obstacle clearance", "mm", "minimum-clearance", 150f,
+            AddPlanningNumber(settingsContainer, "Clearance", "mm", "minimum-clearance", 150f,
                 s => s.MinimumObstacleClearanceMillimeters, (s, v) => s.MinimumObstacleClearanceMillimeters = v);
-            settingsContainer.Add(Text("Minimum gap between the robot and obstacles.", "rm-planning-hint"));
             var adaptive = new Foldout { text = "Adaptive goal", value = false, name = "adaptive-goal-settings" };
             adaptive.AddToClassList("rm-adaptive-goal"); settingsContainer.Add(adaptive);
             var adaptiveEnabled = new Toggle("Allow goal adjustment") { name = "adaptive-goal-enabled" };
@@ -250,8 +317,19 @@ namespace RobotIK
             samples.AddToClassList("rm-number"); samples.AddToClassList("rm-samples"); samplesRow.Add(samples);
             samples.RegisterValueChangedCallback(evt => ChangePlanningSettings(s => s.MaximumGoalSamples = Mathf.Clamp(evt.newValue, 1, 512)));
             synchronizePlanning.Add(s => samples.SetValueWithoutNotify(s.MaximumGoalSamples));
-            var advanced = new Foldout { text = "More motion settings", value = false };
+            var advanced = new Foldout { text = "Motion settings", value = false };
             advanced.AddToClassList("rm-advanced"); settingsContainer.Add(advanced);
+            var posePositionRetry = new Toggle("Intermediate position retry (20 mm)") { name = "intermediate-position-retry", value = planner.IntermediatePositionRetry };
+            var poseRotationRetry = new Toggle("Intermediate rotation retry (5°)") { name = "intermediate-rotation-retry", value = planner.IntermediateRotationRetry };
+            posePositionRetry.AddToClassList("rm-edit-toggle"); advanced.Add(posePositionRetry);
+            poseRotationRetry.AddToClassList("rm-edit-toggle"); advanced.Add(poseRotationRetry);
+            posePositionRetry.RegisterValueChangedCallback(evt => planner.IntermediatePositionRetry = evt.newValue);
+            poseRotationRetry.RegisterValueChangedCallback(evt => planner.IntermediateRotationRetry = evt.newValue);
+            synchronizePlanning.Add(s => {
+                posePositionRetry.SetValueWithoutNotify(planner.IntermediatePositionRetry);
+                poseRotationRetry.SetValueWithoutNotify(planner.IntermediateRotationRetry);
+            });
+            advanced.Add(Text("MoveL fallback after Start posture attempts fail. Start/End stay exact; adaptive goal is suppressed while enabled. The 5° joint-step, singularity and collision checks still apply.", "rm-planning-hint"));
             AddNumberControl(advanced, "Rotation", "°/s", 0f, s => s.RotationSpeedDegree, (s, v) => s.RotationSpeedDegree = v);
             AddNumberControl(advanced, "Acceleration", "mm/s²", 0f, s => s.TcpAccelerationMillimetersPerSecondSquared, (s, v) => s.TcpAccelerationMillimetersPerSecondSquared = v);
             AddNumberControl(advanced, "Deceleration", "mm/s²", 0f, s => s.TcpDecelerationMillimetersPerSecondSquared, (s, v) => s.TcpDecelerationMillimetersPerSecondSquared = v);
@@ -261,18 +339,29 @@ namespace RobotIK
             if (sceneEditor == null) sceneEditor = planner.gameObject.AddComponent<RobotRuntimeSceneEditor>();
             sceneEditor.Bind(planner);
             sceneEditor.AttachOverlay(root);
-            scenePage.Add(sceneEditor.CreateControls(false));
+            scenePage.Add(sceneEditor.CreateControls(false, ShowThemedMenu));
+            ConfigureModernSwitches();
+            scrollPanel.verticalScroller.lowButton.style.display = DisplayStyle.None;
+            scrollPanel.verticalScroller.highButton.style.display = DisplayStyle.None;
 
             var status = Element("rm-status-info"); motionPage.Add(status);
-            status.Add(Text("Status", "rm-field-label"));
-            message = Text("Ready to plan a route.", "rm-status-message"); status.Add(message);
+            message = Text("Ready to plan a route.", "rm-status-message");
             var metrics = Element("rm-metrics"); status.Add(metrics);
             iterations = AddMetric(metrics, "Iterations");
-            planningTime = AddMetric(metrics, "Planning time");
-            travelTime = AddMetric(metrics, "Travel time");
-            var detail = Element("rm-feedback"); status.Add(detail);
-            detail.Add(Text("Planner feedback", "rm-feedback-label"));
-            feedback = Text(planner.Status, "rm-feedback-message"); detail.Add(feedback);
+            planningTime = AddMetric(metrics, "Plan");
+            travelTime = AddMetric(metrics, "Travel");
+            var stepLog = Element("rm-step-log"); status.Add(stepLog);
+            stepLog.Add(Text("Planner feedback", "rm-step-heading"));
+            feedbackSummary = new Foldout { text = "Ready to plan", value = false, name = "planner-feedback-summary" };
+            feedbackSummary.AddToClassList("rm-feedback-summary"); stepLog.Add(feedbackSummary);
+            endpointStep = AddStep(feedbackSummary, "endpoint-step", out endpointStepTitle, out endpointStepDetail);
+            planStep = AddStep(feedbackSummary, "plan-step", out planStepTitle, out planStepDetail);
+            motionStep = AddStep(feedbackSummary, "motion-step", out motionStepTitle, out motionStepDetail);
+            feedbackNext = Text(string.Empty, "rm-step-next"); feedbackNext.name = "feedback-next"; feedbackSummary.Add(feedbackNext);
+            feedbackDetails = new Foldout { text = "Technical details", value = false, name = "planner-feedback" };
+            feedbackDetails.AddToClassList("rm-feedback-details"); status.Add(feedbackDetails);
+            feedback = Text(planner.Status, "rm-feedback-message"); feedbackDetails.Add(feedback);
+            actionBar = Element("rm-action-bar"); panelBody.Add(actionBar);
 
             planButton = new Button(() =>
             {
@@ -281,14 +370,17 @@ namespace RobotIK
                 planner.ResetToStartAndPlan();
                 RefreshStatus();
             }) { text = "Reset & plan" };
-            planButton.AddToClassList("rm-primary"); motionPage.Add(planButton);
+            planButton.AddToClassList("rm-primary"); actionBar.Add(planButton);
             replayButton = new Button(() =>
             {
+                if (planner.IsBusy || planner.IsRrtSearchInProgress) { StopImmediately(); return; }
                 if (!ApplyPendingSettings()) return;
                 planner.ReplayPlannedMotion();
                 RefreshStatus();
-            }) { text = "Replay motion" };
-            replayButton.AddToClassList("rm-secondary"); motionPage.Add(replayButton);
+            }) { text = "Replay", name = "replay-or-stop", tooltip = "Replay the stored motion" };
+            replayButton.AddToClassList("rm-secondary"); actionBar.Add(replayButton);
+            panelBody.Add(message);
+            message.RegisterCallback<GeometryChangedEvent>(_ => UpdateScrollHeight());
             SyncPlanningSettings();
             SetActiveTab(ActiveTab);
             SetMinimized(minimized);
@@ -305,10 +397,13 @@ namespace RobotIK
             if (motionPage == null || scenePage == null) return;
             motionPage.style.display = tab == ControlsTab.Motion ? DisplayStyle.Flex : DisplayStyle.None;
             scenePage.style.display = tab == ControlsTab.SceneEditor ? DisplayStyle.Flex : DisplayStyle.None;
+            if (actionBar != null) actionBar.style.display = tab == ControlsTab.Motion ? DisplayStyle.Flex : DisplayStyle.None;
+            if (message != null) message.style.display = tab == ControlsTab.Motion ? DisplayStyle.Flex : DisplayStyle.None;
             motionTab.EnableInClassList("rm-tab--active", tab == ControlsTab.Motion);
             sceneTab.EnableInClassList("rm-tab--active", tab == ControlsTab.SceneEditor);
             scrollPanel.scrollOffset = Vector2.zero;
-            scrollPanel.schedule.Execute(ConstrainPanelToViewport);
+            if (planButton != null) RefreshStatus();
+            windowPanel.schedule.Execute(() => { UpdateScrollHeight(); ConstrainPanelToViewport(); });
         }
 
         private void AddPlanningNumber(VisualElement parent, string title, string unit, string controlName, float range,
@@ -326,9 +421,8 @@ namespace RobotIK
             if (range > 0f)
             {
                 slider = new Slider(0f, range) { name = controlName + "-slider" };
-                slider.AddToClassList("rm-slider"); group.Add(slider);
-                var scale = Element("rm-scale"); group.Add(scale);
-                scale.Add(Text("Closer to obstacles", "rm-scale-label")); scale.Add(Text("More space", "rm-scale-label"));
+                slider.AddToClassList("rm-slider"); row.Insert(1, slider);
+                slider.tooltip = "Minimum obstacle clearance: closer to obstacles / more space (mm).";
                 slider.RegisterValueChangedCallback(evt => ChangePlanningSettings(s => write(s, evt.newValue)));
             }
             number.RegisterValueChangedCallback(evt =>
@@ -379,9 +473,8 @@ namespace RobotIK
             if (range > 0)
             {
                 slider = new Slider(1f, Mathf.Max(range, read(draft))) { value = Mathf.Max(1f, read(draft)) };
-                slider.AddToClassList("rm-slider"); group.Add(slider);
-                var scale = Element("rm-scale"); group.Add(scale);
-                scale.Add(Text(lowLabel, "rm-scale-label")); scale.Add(Text(highLabel, "rm-scale-label"));
+                slider.AddToClassList("rm-slider"); row.Insert(1, slider);
+                slider.tooltip = title + ": " + lowLabel + " / " + highLabel;
             }
             Action<float> change = value =>
             {
@@ -454,26 +547,59 @@ namespace RobotIK
             if (root == null) return;
             root.EnableInClassList("rm-dark", colorTheme == ColorTheme.Dark);
             if (themeButton == null) return;
-            themeButton.text = colorTheme == ColorTheme.Dark ? "Light mode" : "Dark mode";
+            themeButton.text = colorTheme == ColorTheme.Dark ? "Light" : "Dark";
             themeButton.tooltip = "Switch to " + (colorTheme == ColorTheme.Dark ? "light" : "dark") + " appearance";
         }
 
         private void RefreshStatus()
         {
-            bool busy = planner.IsBusy;
+            bool busy = planner.IsBusy || planner.IsRrtSearchInProgress;
             settingsContainer.SetEnabled(!busy);
             scenePage.SetEnabled(!busy);
             planButton.SetEnabled(!busy);
-            replayButton.SetEnabled(!busy && !algorithmChanged && planner.PlannedPath.Count > 1);
+            replayButton.SetEnabled(busy || (!algorithmChanged && planner.PlannedPath.Count > 1));
+            bool planning = planner.CurrentMotionState == RobotBaseSixAxisMotionPlanner.MotionState.Planning || planner.IsRrtSearchInProgress;
+            replayButton.text = busy ? (planning ? "Cancel planning" : "Stop motion") : "Replay";
+            replayButton.tooltip = busy ? "Stop immediately without confirmation" : "Replay the stored motion";
+            replayButton.EnableInClassList("rm-stop", busy);
+            bool useHeaderStop = busy && (minimized || ActiveTab != ControlsTab.Motion);
+            headerStopButton.style.display = useHeaderStop ? DisplayStyle.Flex : DisplayStyle.None;
+            headerStopButton.text = planning ? "Cancel" : "Stop";
+            headerStopButton.tooltip = replayButton.tooltip;
+            stateLabel.style.display = useHeaderStop ? DisplayStyle.None : DisplayStyle.Flex;
+            startPoseButton.SetEnabled(!busy);
+            endPoseButton.SetEnabled(!busy);
+            checkIkBeforePlan.SetValueWithoutNotify(planner.CheckEndpointIkBeforePlanning);
+            foreach (var toggle in root.Query<Toggle>(className: "rm-modern-switch").ToList())
+                toggle.EnableInClassList("rm-switch--on", toggle.value);
+            void ShowIk(Label label, Label compact, string text, RobotBaseSixAxisMotionPlanner.EndpointIkState result)
+            {
+                label.text = text;
+                compact.text = CompactIkSummary(text, result);
+                compact.tooltip = text;
+                label.EnableInClassList("rm-ik-result--valid", result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid);
+                label.EnableInClassList("rm-ik-result--invalid", result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid || result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision);
+                compact.EnableInClassList("rm-ik-result--valid", result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid);
+                compact.EnableInClassList("rm-ik-result--invalid", result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid || result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision);
+            }
+            ShowIk(startIkResult, startIkCompact, planner.StartIkSummary, planner.StartIkState);
+            ShowIk(endIkResult, endIkCompact, planner.EndIkSummary, planner.EndIkState);
+            bool IkFailed(RobotBaseSixAxisMotionPlanner.EndpointIkState result) =>
+                result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid || result == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision;
+            if ((planner.StartIkSummary != previousStartIkSummary && IkFailed(planner.StartIkState)) ||
+                (planner.EndIkSummary != previousEndIkSummary && IkFailed(planner.EndIkState))) ikDetails.value = true;
+            previousStartIkSummary = planner.StartIkSummary; previousEndIkSummary = planner.EndIkSummary;
             var state = planner.CurrentMotionState;
             stateLabel.text = state == RobotBaseSixAxisMotionPlanner.MotionState.Complete ? "Complete" : state.ToString();
             stateDot.EnableInClassList("rm-state-dot--busy", busy);
             stateDot.EnableInClassList("rm-state-dot--failed", state == RobotBaseSixAxisMotionPlanner.MotionState.Failed);
             int count = planner.IsRrtSearchInProgress ? planner.CurrentRrtSearchIterations : planner.PlanningIterations;
-            iterations.text = count > 0 || busy ? count.ToString(CultureInfo.InvariantCulture) : "—";
-            planningTime.text = state == RobotBaseSixAxisMotionPlanner.MotionState.Planning ? "Planning…" : FormatSeconds(planner.PlanningTimeSeconds);
+            iterations.text = count > 0 || busy ? count.ToString("N0", CultureInfo.InvariantCulture) : "—";
+            iterations.tooltip = count.ToString("N0", CultureInfo.InvariantCulture);
+            planningTime.text = FormatSeconds(planner.LivePlanningTimeSeconds);
             travelTime.text = FormatSeconds(planner.EstimatedTravelTimeSeconds);
             feedback.text = planner.Status;
+            RefreshStepLog(state);
             if (planner.Status == previousStatus && state == previousState) return;
             previousStatus = planner.Status;
             previousState = state;
@@ -482,23 +608,245 @@ namespace RobotIK
                 case RobotBaseSixAxisMotionPlanner.MotionState.Planning: message.text = "Searching for a collision-free route…"; break;
                 case RobotBaseSixAxisMotionPlanner.MotionState.Moving: message.text = "Following the planned route."; break;
                 case RobotBaseSixAxisMotionPlanner.MotionState.Complete: message.text = "Motion complete. Replay is available."; break;
-                case RobotBaseSixAxisMotionPlanner.MotionState.Failed: message.text = "Motion could not complete. See feedback below."; break;
+                case RobotBaseSixAxisMotionPlanner.MotionState.Failed: message.text = "Motion failed. See planner feedback."; break;
+                case RobotBaseSixAxisMotionPlanner.MotionState.Stopped: message.text = planner.LastStopWasPlanning ? "Planning cancelled. No partial route will run." : "Motion stopped. Current pose held."; break;
                 default: message.text = "Ready to plan a route."; break;
             }
+        }
+
+        private void StopImmediately()
+        {
+            // No pending numeric edits or validation may delay a stop click.
+            planner.StopMotion();
+            RefreshStatus();
+        }
+
+        private void ShowPlannerMenu()
+        {
+            if (algorithm == null || !algorithm.enabledInHierarchy || planner.IsBusy || planner.IsRrtSearchInProgress) return;
+            plannerMenuRoot?.RemoveFromHierarchy();
+            var menu = new GenericDropdownMenu();
+            for (int i = 0; i < algorithms.Length; i++)
+            {
+                if (i == 0 || i == 3)
+                {
+                    if (i == 3) menu.AddSeparator(string.Empty);
+                    menu.AddDisabledItem(i == 0 ? "Cartesian & Grid planners" : "Joint-space planners", false);
+                    menu.contentContainer.ElementAt(menu.contentContainer.childCount - 1).AddToClassList("rm-planner-group");
+                }
+                int choice = i;
+                menu.AddItem(algorithm.choices[i], planner.SelectedPlanner == algorithms[i], () =>
+                {
+                    if (!planner.IsBusy && !planner.IsRrtSearchInProgress && algorithm.enabledInHierarchy) algorithm.index = choice;
+                });
+                var item = menu.contentContainer.ElementAt(menu.contentContainer.childCount - 1);
+                item.AddToClassList("rm-planner-choice");
+                item.userData = algorithms[i];
+            }
+            ShowThemedMenu(menu, algorithm);
+        }
+
+        private void ShowThemedMenu(GenericDropdownMenu menu, VisualElement field)
+        {
+            if (!field.enabledInHierarchy || planner.IsBusy || planner.IsRrtSearchInProgress) return;
+            plannerMenuRoot?.RemoveFromHierarchy();
+            plannerMenuRoot = menu.contentContainer;
+            while (plannerMenuRoot.parent != null) plannerMenuRoot = plannerMenuRoot.parent;
+            plannerMenuRoot.name = field.name + "-popup";
+            plannerMenuRoot.AddToClassList("rm-planner-popup");
+            plannerMenuRoot.EnableInClassList("rm-dark", colorTheme == ColorTheme.Dark);
+            var sheet = Resources.Load<StyleSheet>("RobotMotionControls");
+            if (sheet != null) plannerMenuRoot.styleSheets.Add(sheet);
+            var input = field.Q(className: "unity-base-field__input");
+            menu.DropDown(input != null ? input.worldBound : field.worldBound, field, true);
+        }
+
+        private void RefreshStepLog(RobotBaseSixAxisMotionPlanner.MotionState state)
+        {
+            bool endpointsValid = planner.StartIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid &&
+                planner.EndIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid;
+            bool endpointFailed = planner.StartIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision ||
+                planner.StartIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid ||
+                planner.EndIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision ||
+                planner.EndIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid;
+            string checks = $"Start: {CompactIkSummary(planner.StartIkSummary, planner.StartIkState)} · End: {CompactIkSummary(planner.EndIkSummary, planner.EndIkState)}";
+            SetStep(endpointStep, endpointStepTitle, endpointStepDetail,
+                !planner.CheckEndpointIkBeforePlanning ? "Endpoint precheck disabled" : endpointsValid ? "Endpoint checks passed" : endpointFailed ? "Endpoint check failed" : "Endpoint IK check",
+                (endpointsValid || endpointFailed ? "Last check · " : string.Empty) + checks, endpointFailed ? "failed" : endpointsValid ? "passed" : "neutral");
+            string raw = planner.Status ?? string.Empty;
+            string route = algorithm.value + $" · {planner.PlannedPath.Count:N0} waypoints";
+            var posture = Regex.Match(raw, @"Selected Start IK posture ([\d]+/[\d]+)");
+            if (posture.Success) route += " · Start IK " + posture.Groups[1].Value;
+            motionStep.style.display = DisplayStyle.None;
+            switch (state)
+            {
+                case RobotBaseSixAxisMotionPlanner.MotionState.Planning:
+                    string stage = raw.IndexOf("scan", StringComparison.OrdinalIgnoreCase) >= 0 ? "Scanning occupancy" :
+                        raw.IndexOf("intermediate pose", StringComparison.OrdinalIgnoreCase) >= 0 ? "Trying intermediate pose adjustments" : "Searching for a collision-free route";
+                    var segment = Regex.Match(raw, @"(?:Segment \[([^\]]+)\]|^(.+?): searching with)");
+                    if (segment.Success) stage += " · " + (segment.Groups[1].Success ? segment.Groups[1].Value : segment.Groups[2].Value);
+                    SetStep(planStep, planStepTitle, planStepDetail, "Planning route", stage, "current");
+                    feedbackNext.text = "Cancel planning stops the search and discards the unfinished route.";
+                    break;
+                case RobotBaseSixAxisMotionPlanner.MotionState.Moving:
+                case RobotBaseSixAxisMotionPlanner.MotionState.Complete:
+                    SetStep(planStep, planStepTitle, planStepDetail, "Route validated", route, "passed");
+                    motionStep.style.display = DisplayStyle.Flex;
+                    bool complete = state == RobotBaseSixAxisMotionPlanner.MotionState.Complete;
+                    SetStep(motionStep, motionStepTitle, motionStepDetail, complete ? "Motion complete" : "Executing motion",
+                        complete ? "The robot reached the planned End pose." : "Following the validated trajectory.", complete ? "passed" : "current");
+                    feedbackNext.text = complete ? "Replay the route or reset and plan again." : "Stop motion holds the current simulated robot pose.";
+                    break;
+                case RobotBaseSixAxisMotionPlanner.MotionState.Stopped:
+                    SetStep(planStep, planStepTitle, planStepDetail, planner.LastStopWasPlanning ? "Planning cancelled" : "Route retained",
+                        planner.LastStopWasPlanning ? "Search stopped · partial route discarded" : route, "neutral");
+                    if (!planner.LastStopWasPlanning)
+                    {
+                        motionStep.style.display = DisplayStyle.Flex;
+                        SetStep(motionStep, motionStepTitle, motionStepDetail, "Motion stopped", "Robot held at its current pose.", "neutral");
+                    }
+                    feedbackNext.text = planner.LastStopWasPlanning ? "Adjust settings or start a new plan." : "Replay the retained route or plan again.";
+                    break;
+                case RobotBaseSixAxisMotionPlanner.MotionState.Failed:
+                    string title = "Planning failed", detail = "See Technical details for the full diagnostic.";
+                    if (raw.IndexOf("continuous IK branch", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        title = "No continuous IK route";
+                        var joint = Regex.Match(raw, @"\(J\d+: [^)]+\)");
+                        var jump = Regex.Match(raw, @"nearest joint jump [\d.]+ degrees exceeds [\d.]+ degrees");
+                        detail = joint.Success ? joint.Value.Trim('(', ')') + " · maximum joint step 5°" : jump.Success ? jump.Value : "Joint continuity limit exceeded.";
+                    }
+                    else if (raw.IndexOf("No free grid route", StringComparison.OrdinalIgnoreCase) >= 0 || raw.IndexOf("No traversable route", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "No traversable scanned route"; detail = "The scanned free cells could not connect this segment."; }
+                    else if (raw.IndexOf("unreachable", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "Target pose unreachable"; detail = "IK could not find a solution for the requested pose."; }
+                    else if (raw.IndexOf("singular", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "Singularity check failed"; detail = "No route satisfying the singularity margin was found."; }
+                    else if (raw.IndexOf("Path ended short", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "End target was not reached"; detail = "Playback ended outside the target pose tolerance."; }
+                    else if (raw.IndexOf("wall-time limit", StringComparison.OrdinalIgnoreCase) >= 0 || raw.IndexOf("route attempt limit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        raw.IndexOf("node limit", StringComparison.OrdinalIgnoreCase) >= 0 || raw.IndexOf("deadline", StringComparison.OrdinalIgnoreCase) >= 0 || raw.IndexOf("budget", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "Search limit reached"; detail = "No complete route was found within the search budget."; }
+                    else if (raw.IndexOf("geometry is missing", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "Collision geometry missing"; detail = "Assign the robot and obstacle colliders before planning."; }
+                    else if (raw.IndexOf("collision", StringComparison.OrdinalIgnoreCase) >= 0 || raw.IndexOf("clearance", StringComparison.OrdinalIgnoreCase) >= 0)
+                    { title = "No collision-free route"; detail = "A pose or route did not satisfy collision and clearance checks."; }
+                    SetStep(planStep, planStepTitle, planStepDetail, title, detail, "failed");
+                    feedbackNext.text = "Inspect Technical details and adjust the route or intermediate pose options.";
+                    break;
+                default:
+                    SetStep(planStep, planStepTitle, planStepDetail, planner.PlannedPath.Count > 1 ? "Route available" : "Ready to plan",
+                        planner.PlannedPath.Count > 1 ? route : "Start → End", "neutral");
+                    feedbackNext.text = string.Empty;
+                    break;
+            }
+            // Successful rows keep only the differentiating information; the full
+            // descriptions remain available in tooltips and the existing details.
+            endpointStepTitle.tooltip = endpointStepTitle.text;
+            endpointStepDetail.tooltip = endpointStepDetail.text;
+            if (endpointsValid)
+            {
+                endpointStepTitle.text = "Endpoint IK passed";
+                endpointStepDetail.text = "Start " + CompactIkSummary(planner.StartIkSummary, planner.StartIkState).Replace("Valid · ", string.Empty) +
+                    " · End " + CompactIkSummary(planner.EndIkSummary, planner.EndIkState).Replace("Valid · ", string.Empty);
+            }
+            planStepDetail.tooltip = planStepDetail.text;
+            motionStepDetail.tooltip = motionStepDetail.text;
+            if (state == RobotBaseSixAxisMotionPlanner.MotionState.Moving || state == RobotBaseSixAxisMotionPlanner.MotionState.Complete ||
+                (state == RobotBaseSixAxisMotionPlanner.MotionState.Stopped && !planner.LastStopWasPlanning))
+                planStepDetail.text = $"{planner.PlannedPath.Count:N0} pts" + (posture.Success ? " · IK " + posture.Groups[1].Value : string.Empty) +
+                    (planner.UsedAdaptiveGoal ? " · adjusted End" : string.Empty);
+            if (state == RobotBaseSixAxisMotionPlanner.MotionState.Complete) motionStepDetail.text = "End reached";
+            else if (state == RobotBaseSixAxisMotionPlanner.MotionState.Moving) motionStepDetail.text = "Stop available";
+            else if (state == RobotBaseSixAxisMotionPlanner.MotionState.Stopped) motionStepDetail.text = "Current pose held";
+            feedbackNext.style.display = state == RobotBaseSixAxisMotionPlanner.MotionState.Failed || state == RobotBaseSixAxisMotionPlanner.MotionState.Stopped
+                ? DisplayStyle.Flex : DisplayStyle.None;
+            string summary = state == RobotBaseSixAxisMotionPlanner.MotionState.Complete ?
+                (endpointsValid && planner.CheckEndpointIkBeforePlanning ? "Motion complete · 3 checks passed" : "Motion complete · route validated") :
+                state == RobotBaseSixAxisMotionPlanner.MotionState.Moving ? "Executing validated motion" :
+                state == RobotBaseSixAxisMotionPlanner.MotionState.Planning ? "Planning route · view progress" :
+                state == RobotBaseSixAxisMotionPlanner.MotionState.Failed ? planStepTitle.text :
+                state == RobotBaseSixAxisMotionPlanner.MotionState.Stopped ? planner.LastStopWasPlanning ? "Planning cancelled" : "Motion stopped" : "Ready to plan";
+            feedbackSummary.text = summary;
+            feedbackSummary.tooltip = feedbackNext.text;
+            feedbackSummary.EnableInClassList("rm-feedback-summary--failed", state == RobotBaseSixAxisMotionPlanner.MotionState.Failed);
+            // Expand only on a new failure; ordinary refreshes preserve user choice.
+            if (state == RobotBaseSixAxisMotionPlanner.MotionState.Failed && (previousState != state || previousStatus != planner.Status))
+                feedbackSummary.value = true;
+        }
+
+        private void ConfigureModernSwitches()
+        {
+            // Keep native Toggle input, keyboard navigation and value callbacks.
+            // Never restyle Foldout toggles as switches.
+            foreach (var toggle in root.Query<Toggle>(className: "rm-edit-toggle").ToList())
+            {
+                toggle.AddToClassList("rm-modern-switch");
+                toggle.EnableInClassList("rm-switch--on", toggle.value);
+                toggle.RegisterValueChangedCallback(evt => toggle.EnableInClassList("rm-switch--on", evt.newValue));
+            }
+        }
+
+        private static VisualElement AddStep(VisualElement parent, string name, out Label title, out Label detail)
+        {
+            var row = Element("rm-step"); row.name = name; parent.Add(row);
+            row.Add(Element("rm-step-dot"));
+            var content = Element("rm-step-content"); row.Add(content);
+            title = Text(string.Empty, "rm-step-title"); content.Add(title);
+            detail = Text(string.Empty, "rm-step-detail"); content.Add(detail);
+            return row;
+        }
+
+        private static void SetStep(VisualElement row, Label title, Label detail, string heading, string body, string state)
+        {
+            title.text = heading; detail.text = body;
+            row.EnableInClassList("rm-step--passed", state == "passed");
+            row.EnableInClassList("rm-step--current", state == "current");
+            row.EnableInClassList("rm-step--failed", state == "failed");
         }
 
         private void ResizePanel(GeometryChangedEvent evt)
         {
             viewportSize = evt.newRect.size;
             float width = Mathf.Min(360f, Mathf.Max(0f, viewportSize.x - ScreenMargin * 2f));
-            scrollPanel.style.width = width;
-            scrollPanel.style.maxHeight = Mathf.Max(0f, viewportSize.y - ScreenMargin * 2f);
+            windowPanel.style.width = width;
+            windowPanel.style.maxHeight = Mathf.Max(0f, viewportSize.y - ScreenMargin * 2f);
             if (!hasPanelPosition)
             {
                 panelPosition = new Vector2(viewportSize.x - width - ScreenMargin, ScreenMargin);
                 hasPanelPosition = true;
             }
-            ConstrainPanelToViewport();
+            UpdateScrollHeight(); ConstrainPanelToViewport();
+        }
+
+        private static string CompactIkSummary(string text, RobotBaseSixAxisMotionPlanner.EndpointIkState state)
+        {
+            if (state == RobotBaseSixAxisMotionPlanner.EndpointIkState.NotChecked) return "Not checked";
+            if (state == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision) return "Collision";
+            if (state == RobotBaseSixAxisMotionPlanner.EndpointIkState.Invalid) return "Invalid";
+            int separator = text.IndexOf("— ", StringComparison.Ordinal);
+            if (separator >= 0)
+            {
+                string remainder = text.Substring(separator + 2);
+                int space = remainder.IndexOf(' ');
+                if (space > 0 && int.TryParse(remainder.Substring(0, space), out int count)) return $"Valid · {count} IK";
+            }
+            return "Valid";
+        }
+
+        private void UpdateScrollHeight()
+        {
+            if (scrollPanel == null || windowPanel == null || viewportSize.y <= 0f) return;
+            float Height(VisualElement element)
+            {
+                if (element == null || element.resolvedStyle.display == DisplayStyle.None) return 0f;
+                var style = element.resolvedStyle;
+                return float.IsNaN(style.height) ? 0f : style.height + style.marginTop + style.marginBottom;
+            }
+            var windowStyle = windowPanel.resolvedStyle;
+            float chrome = Height(panelHeader) + Height(panelTabs) + Height(actionBar) + Height(message) +
+                windowStyle.paddingTop + windowStyle.paddingBottom + windowStyle.borderTopWidth + windowStyle.borderBottomWidth;
+            scrollPanel.style.maxHeight = Mathf.Max(0f, viewportSize.y - ScreenMargin * 2f - chrome);
         }
 
         /// <summary>Folds the panel to its draggable header without interrupting robot motion.</summary>
@@ -507,11 +855,12 @@ namespace RobotIK
             minimized = value;
             if (panelBody == null) return;
             panelBody.style.display = minimized ? DisplayStyle.None : DisplayStyle.Flex;
-            scrollPanel.EnableInClassList("rm-panel--minimized", minimized);
+            windowPanel.EnableInClassList("rm-panel--minimized", minimized);
             minimizeButton.text = minimized ? "□" : "−";
             minimizeButton.tooltip = minimized ? "Restore panel" : "Minimize panel";
             scrollPanel.verticalScrollerVisibility = minimized ? ScrollerVisibility.Hidden : ScrollerVisibility.Auto;
-            scrollPanel.schedule.Execute(ConstrainPanelToViewport);
+            RefreshStatus();
+            windowPanel.schedule.Execute(() => { UpdateScrollHeight(); ConstrainPanelToViewport(); });
         }
 
         /// <summary>Moves the panel in UI coordinates and clamps it to the available viewport.</summary>
@@ -525,17 +874,17 @@ namespace RobotIK
 
         private void ConstrainPanelToViewport()
         {
-            if (scrollPanel == null || viewportSize.x <= 0f || viewportSize.y <= 0f) return;
-            float width = scrollPanel.layout.width;
-            float height = scrollPanel.layout.height;
+            if (windowPanel == null || viewportSize.x <= 0f || viewportSize.y <= 0f) return;
+            float width = windowPanel.layout.width;
+            float height = windowPanel.layout.height;
             if (float.IsNaN(width) || width <= 0f) width = Mathf.Min(360f, Mathf.Max(0f, viewportSize.x - ScreenMargin * 2f));
             if (float.IsNaN(height) || height <= 0f) height = Mathf.Min(minimized ? 110f : 700f, viewportSize.y - ScreenMargin * 2f);
             float maxX = Mathf.Max(ScreenMargin, viewportSize.x - width - ScreenMargin);
             float maxY = Mathf.Max(ScreenMargin, viewportSize.y - height - ScreenMargin);
             panelPosition.x = Mathf.Clamp(panelPosition.x, ScreenMargin, maxX);
             panelPosition.y = Mathf.Clamp(panelPosition.y, ScreenMargin, maxY);
-            scrollPanel.style.left = panelPosition.x;
-            scrollPanel.style.top = panelPosition.y;
+            windowPanel.style.left = panelPosition.x;
+            windowPanel.style.top = panelPosition.y;
         }
 
         private void BeginPanelDrag(PointerDownEvent evt)

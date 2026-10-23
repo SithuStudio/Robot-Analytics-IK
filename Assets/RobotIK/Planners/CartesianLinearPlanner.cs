@@ -15,6 +15,12 @@ namespace RobotIK
         private string rejection;
         private Vector3 rejectionPosition;
         private bool refinementCanHelp;
+        private CartesianOccupancyGrid endpointGrid;
+        private System.Diagnostics.Stopwatch poseRetryTimer;
+        private double poseRetryBegan;
+        internal bool PoseRetryExpired => poseRetryTimer != null &&
+            (world.PlanningElapsedSeconds == null ? poseRetryTimer.Elapsed.TotalSeconds : world.PlanningElapsedSeconds() - poseRetryBegan) >= 5.0;
+        internal CartesianOccupancyGrid OccupancyGrid => endpointGrid ?? world.LinearOccupancyGrid;
 
         private bool Reject(string reason, bool canRefine = false) { rejection = reason; refinementCanHelp = canRefine; return false; }
 
@@ -30,8 +36,137 @@ namespace RobotIK
         {
             if (!string.IsNullOrEmpty(world.LinearOccupancyError))
             { result.FailureReason = world.LinearOccupancyError; return false; }
-            if (world.LinearOccupancyGrid != null && (!world.LinearOccupancyGrid.IsFree(a) || !world.LinearOccupancyGrid.IsFree(b)))
-            { result.FailureReason = "MoveL endpoints must be inside scanned free cells. Check scanner volume, obstacle layers, and rescan."; return false; }
+            try
+            {
+                var grid = world.LinearOccupancyGrid;
+                if (grid != null)
+                {
+                    if (!grid.TryCell(a, out int first) || !grid.TryCell(b, out int last))
+                    {
+                        result.FailureReason = "MoveL endpoints must be inside the scanned volume. Expand the scanner volume and rescan.";
+                        return false;
+                    }
+                    // One opened voxel can remain isolated behind adjacent occupied
+                    // voxels. Validate poses before allowing local endpoint access.
+                    if (!ValidateEndpoint(ref start, a, ar, "Start", false, result) ||
+                        !ValidateEndpoint(ref goal, b, br, "End", world.LinearAllowAlternateGoalConfiguration, result)) return false;
+                    var access = grid.WithValidatedEndpointAccess(a, b, out int opened);
+                    if (opened > 0)
+                    {
+                        endpointGrid = access;
+                        result.RoutingDiagnostics += $"Start and End IK poses passed joint limits, pose accuracy, robot collision/clearance and singularity checks. Occupancy bypass opens {opened} local endpoint access cells within {grid.EndpointAccessRadius * 1000f:F0} mm of Start/End. All MoveL samples and swept edges remain validated; other occupied cells and scan boundaries stay blocked.\n";
+                    }
+                }
+                if (PlanRoute(start, goal, a, ar, b, br, result)) return true;
+                if (!world.LinearIntermediatePositionRetry && !world.LinearIntermediateRotationRetry) return false;
+                return TryIntermediatePose(start, goal, a, ar, b, br, result);
+            }
+            finally { endpointGrid = null; poseRetryTimer = null; }
+        }
+
+        // Only the runtime's second pass enables this search, after all exact
+        // Start-posture attempts. Temporary poses never modify authored markers.
+        private bool TryIntermediatePose(float[] start, float[] goal, Vector3 a, Quaternion ar,
+            Vector3 b, Quaternion br, Result result)
+        {
+            string exactFailure = result.FailureReason;
+            if (!ValidateEndpoint(ref start, a, ar, "Start", false, result) ||
+                !ValidateEndpoint(ref goal, b, br, "End", world.LinearAllowAlternateGoalConfiguration, result)) return false;
+            poseRetryTimer = System.Diagnostics.Stopwatch.StartNew();
+            poseRetryBegan = world.PlanningElapsedSeconds?.Invoke() ?? 0;
+            float fraction = .75f;
+            Vector3 axis = b - a;
+            if (result.HasFailurePosition && axis.sqrMagnitude > 1e-10f)
+                fraction = Math.Max(.15f, Math.Min(.85f, Vector3.Dot(result.FailurePosition - a, axis) / axis.sqrMagnitude));
+            var poses = new List<Pose>();
+            foreach (float t in new[] { fraction, .5f, .875f })
+                foreach (float scale in new[] { .5f, 1f })
+                    for (int j = 0; j < 3; j++)
+                        foreach (float sign in new[] { 1f, -1f })
+                        {
+                            Vector3 direction = j == 0 ? Vector3.right : j == 1 ? Vector3.up : Vector3.forward;
+                            Vector3 p = Vector3.Lerp(a, b, t);
+                            Quaternion r = Quaternion.Slerp(ar, br, t);
+                            Vector3 euler = direction * (sign * scale * 5f);
+                            Quaternion deviated = Quaternion.Euler(euler.x, euler.y, euler.z) * r;
+                            if (world.LinearIntermediatePositionRetry) poses.Add(new Pose(p + direction * (sign * scale * .02f), r));
+                            if (world.LinearIntermediateRotationRetry) poses.Add(new Pose(p, deviated));
+                            if (world.LinearIntermediatePositionRetry && world.LinearIntermediateRotationRetry)
+                                poses.Add(new Pose(p + direction * (sign * scale * .02f), deviated));
+                        }
+            int tested = 0;
+            string lastFailure = exactFailure;
+            // Try inexpensive direct pairs first; only then spend the remaining
+            // shared budget on grid/geometry routing around obstacles.
+            for (int routed = 0; routed < 2 && !PoseRetryExpired; routed++)
+                foreach (Pose pose in poses)
+                {
+                    world.CancellationToken.ThrowIfCancellationRequested();
+                    if (PoseRetryExpired) break;
+                    if (OccupancyGrid != null && !OccupancyGrid.IsFree(pose.position)) continue;
+                    world.GetTcpPosition(start);
+                    var solutions = world.SolveIk(pose.position, pose.rotation);
+                    if (solutions == null) continue;
+                    foreach (var candidate in solutions)
+                    {
+                        if (PoseRetryExpired) break;
+                        tested++;
+                        var first = new Result();
+                        bool firstOk = routed == 0
+                            ? TryPlanDirect(start, candidate, a, ar, pose.position, pose.rotation, first)
+                            : PlanRoute(start, candidate, a, ar, pose.position, pose.rotation, first);
+                        result.Iterations += first.Iterations; result.RoutesTried += first.RoutesTried;
+                        if (!firstOk) { lastFailure = first.FailureReason; continue; }
+                        var second = new Result();
+                        float[] atPose = first.JointPath[first.JointPath.Count - 1];
+                        bool secondOk = routed == 0
+                            ? TryPlanDirect(atPose, goal, pose.position, pose.rotation, b, br, second)
+                            : PlanRoute(atPose, goal, pose.position, pose.rotation, b, br, second);
+                        result.Iterations += second.Iterations; result.RoutesTried += second.RoutesTried;
+                        if (!secondOk) { lastFailure = second.FailureReason; continue; }
+                        result.JointPath.Clear(); result.AutomaticWaypoints.Clear();
+                        result.JointPath.AddRange(first.JointPath);
+                        for (int i = 1; i < second.JointPath.Count; i++) result.JointPath.Add(second.JointPath[i]);
+                        result.AutomaticWaypoints.AddRange(first.AutomaticWaypoints);
+                        result.AutomaticWaypoints.Add(pose.position);
+                        result.AutomaticWaypoints.AddRange(second.AutomaticWaypoints);
+                        result.HasFailurePosition = false; result.FailureReason = null;
+                        result.RoutingDiagnostics += $"Automatic intermediate pose succeeded after {tested} IK trials (position <=20 mm, rotation <=5 degrees as enabled). Start/End stay exact; all samples retain the 5-degree joint-step, singularity and collision/clearance checks.\n";
+                        return true;
+                    }
+                }
+            result.JointPath.Clear(); result.AutomaticWaypoints.Clear();
+            result.FailureReason = $"{exactFailure} Intermediate pose retry failed after {tested} IK trials{(PoseRetryExpired ? " (5 s computation budget reached)" : string.Empty)}. Last rejection: {lastFailure}. Start/End remain exact; no partial path will execute.";
+            return false;
+        }
+
+        private bool ValidateEndpoint(ref float[] angles, Vector3 position, Quaternion rotation,
+            string label, bool alternate, Result result)
+        {
+            world.CancellationToken.ThrowIfCancellationRequested();
+            if (Valid(angles, position, rotation)) return true;
+            string reason = rejection;
+            Vector3 failurePosition = rejectionPosition;
+            if (alternate && world.SolveIk != null)
+            {
+                var candidates = world.SolveIk(position, rotation);
+                if (candidates != null)
+                    foreach (var candidate in candidates)
+                    {
+                        world.CancellationToken.ThrowIfCancellationRequested();
+                        if (Valid(candidate, position, rotation)) { angles = candidate; return true; }
+                        reason = rejection; failurePosition = rejectionPosition;
+                    }
+            }
+            result.FailurePosition = failurePosition;
+            result.HasFailurePosition = true;
+            result.FailureReason = "MoveL endpoint rejected: " + label + ": " + reason;
+            return false;
+        }
+
+        private bool PlanRoute(float[] start, float[] goal, Vector3 a, Quaternion ar,
+            Vector3 b, Quaternion br, Result result)
+        {
             if (world.LinearAutomaticWaypoints && world.LinearForceLiftTraverseDescend)
             {
                 if (Vector3.Distance(a, b) < 0.00001f && Quaternion.Angle(ar, br) < 0.01f)
@@ -40,16 +175,21 @@ namespace RobotIK
             }
             if (TryPlanDirect(start, goal, a, ar, b, br, result)) return true;
             if (!world.LinearAutomaticWaypoints) return false;
-            if (world.LinearOccupancyGrid != null)
+            if (OccupancyGrid != null)
             {
                 if (result.FailureReason != null && result.FailureReason.StartsWith("MoveL endpoint rejected:")) return false;
-                if (!new CartesianGridWaypointSearch(world, this).TryPlan(start, goal, a, ar, b, br, result)) return false;
-                if (world.LinearOptimizePath)
+                if (!new CartesianGridWaypointSearch(world, this).TryPlan(start, goal, a, ar, b, br, result))
+                {
+                    if (endpointGrid != null)
+                        result.FailureReason += $" Endpoint IK poses passed validation; local scan access within {endpointGrid.EndpointAccessRadius * 1000f:F0} mm was allowed. A collision-free connecting route is still required.";
+                    return false;
+                }
+                if (world.LinearOptimizePath && poseRetryTimer == null)
                     new CartesianLinearPathOptimizer(world, this).Optimize(start, goal, a, ar, b, br, result);
                 return true;
             }
             if (!new CartesianLinearWaypointSearch(world, this).TryPlan(start, goal, a, ar, b, br, result)) return false;
-            if (world.LinearOptimizePath)
+            if (world.LinearOptimizePath && poseRetryTimer == null)
                 new CartesianLinearPathOptimizer(world, this).Optimize(start, goal, a, ar, b, br, result);
             return true;
         }
@@ -58,7 +198,10 @@ namespace RobotIK
         internal bool TryPlanDirect(float[] start, float[] goal, Vector3 a, Quaternion ar,
             Vector3 b, Quaternion br, Result result, bool poseGoal = false, int refinements = 4, Func<bool> shouldAbort = null)
         {
-            if (world.LinearOccupancyGrid != null && !world.LinearOccupancyGrid.SegmentFree(a,b))
+            if (PoseRetryExpired) { result.FailureReason = "Intermediate pose search budget reached."; return false; }
+            var callerAbort = shouldAbort;
+            if (poseRetryTimer != null) shouldAbort = () => PoseRetryExpired || (callerAbort != null && callerAbort());
+            if (OccupancyGrid != null && !OccupancyGrid.SegmentFree(a,b))
             { result.RoutesTried=1; result.FailureReason="MoveL line crosses an occupied or unscanned grid cell."; return false; }
             if (shouldAbort != null && shouldAbort()) { result.FailureReason = "MoveL edge validation stopped at the automatic search deadline."; return false; }
             bool alternateGoal = poseGoal || world.LinearAllowAlternateGoalConfiguration;
@@ -126,6 +269,8 @@ namespace RobotIK
                     {
                         var reachable = new List<float[]>();
                         float nearestJump = float.PositiveInfinity;
+                        int nearestJoint = -1;
+                        float nearestFrom = 0f, nearestTo = 0f;
                         foreach (float[] angles in solutions)
                         {
                             if (angles == null || angles.Length != start.Length) continue;
@@ -133,16 +278,31 @@ namespace RobotIK
                             foreach (Node parent in previous)
                             {
                                 float largest = 0;
-                                for (int j = 0; j < angles.Length; j++) largest = Mathf.Max(largest, Mathf.Abs(angles[j] - parent.Angles[j]));
+                                int largestJoint = -1;
+                                for (int j = 0; j < angles.Length; j++)
+                                {
+                                    float delta = Mathf.Abs(angles[j] - parent.Angles[j]);
+                                    if (delta > largest) { largest = delta; largestJoint = j; }
+                                }
+                                if (largest < nearestJump)
+                                {
+                                    nearestJump = largest;
+                                    nearestJoint = largestJoint;
+                                    if (largestJoint >= 0)
+                                    {
+                                        nearestFrom = parent.Angles[largestJoint];
+                                        nearestTo = angles[largestJoint];
+                                    }
+                                }
                                 jump = Mathf.Min(jump, largest);
                             }
-                            nearestJump = Mathf.Min(nearestJump, jump);
                             if (jump <= 5f) reachable.Add(angles);
                         }
                         if (reachable.Count == 0)
                         {
                             retryFiner = true;
-                            reasons.Add($"No continuous IK branch: nearest joint jump {nearestJump:F3} degrees exceeds 5 degrees");
+                            reasons.Add($"No continuous IK branch: nearest joint jump {nearestJump:F3} degrees exceeds 5 degrees" +
+                                (nearestJoint >= 0 ? $" (J{nearestJoint + 1}: {nearestFrom:F3} -> {nearestTo:F3} degrees)" : string.Empty));
                         }
                         solutions = reachable;
                         if (solutions.Count > 0 && world.EvaluateConfigurationBatch != null)
@@ -231,6 +391,8 @@ namespace RobotIK
         // length (one meter by default), angular rows use radians. Reject a small
         // minimum/maximum singular-value ratio; this is separate from jump detection.
         internal string GetSingularityRejection(float[] angles) => HasSingularityMargin(angles) ? null : rejection;
+        internal string GetPoseRejection(float[] angles, Vector3 position, Quaternion rotation)
+            => Valid(angles, position, rotation) ? null : rejection;
 
         internal static double[,] GeometricJacobian(Vector3[] origins, Vector3[] axes, Vector3 tcp, float length)
         {

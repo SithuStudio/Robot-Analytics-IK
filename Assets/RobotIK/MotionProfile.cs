@@ -33,6 +33,8 @@ namespace RobotIK
         private readonly Settings settings;
         private readonly Func<float[], Pose> evaluateTcp;
         private readonly Func<float[], bool> isConfigurationValid;
+        private Func<float[], float[], bool> isSegmentValid;
+        private IReadOnlyList<int> blendAnchors;
         private readonly List<float[]> path = new List<float[]>();
         private readonly List<ExecutionGroup> executionGroups = new List<ExecutionGroup>();
 
@@ -47,11 +49,25 @@ namespace RobotIK
         /// without it, smoothing checks only the accuracy distance, not collisions.
         /// Start/end poses and the original joint path are preserved. Speed ramps occur only
         /// at start/end; angular speed can limit translation during simultaneous rotation.
+        /// Optional cornerWaypointIndices identify blend anchors in a dense path. Samples
+        /// outside blend windows remain unchanged. isSegmentValid checks sampled curve edges.
         /// </summary>
         public static MotionProfile Create(IReadOnlyList<float[]> jointPath, Func<float[], Pose> evaluateTcp,
-            Settings settings = null, Func<float[], bool> isConfigurationValid = null)
+            Settings settings = null, Func<float[], bool> isConfigurationValid = null,
+            IReadOnlyList<int> cornerWaypointIndices = null, Func<float[], float[], bool> isSegmentValid = null)
         {
             var profile = new MotionProfile(jointPath, evaluateTcp, settings ?? new Settings(), isConfigurationValid);
+            profile.isSegmentValid = isSegmentValid;
+            if (cornerWaypointIndices != null)
+            {
+                var anchors = new SortedSet<int> { 0, jointPath.Count - 1 };
+                foreach (int index in cornerWaypointIndices)
+                {
+                    if (index < 0 || index >= jointPath.Count) throw new ArgumentOutOfRangeException(nameof(cornerWaypointIndices));
+                    anchors.Add(index);
+                }
+                profile.blendAnchors = new List<int>(anchors);
+            }
             profile.BuildExecutionGroups();
             return profile;
         }
@@ -185,6 +201,7 @@ namespace RobotIK
         {
             executionGroups.Clear();
             SmoothedPathCorners = RetainedSharpCorners = 0;
+            if (blendAnchors != null) { BuildSampledPathBlends(); return; }
             var points = new List<float[]>();
             foreach (float[] waypoint in path)
                 if (points.Count == 0 || Distance(points[points.Count - 1], waypoint) > 0.0001f)
@@ -213,6 +230,61 @@ namespace RobotIK
         
         }
 
+        // Keep the validated dense segments outside corner windows. Simplified TCP
+        // anchors identify corners only; they never replace the original joint path.
+        private void BuildSampledPathBlends()
+        {
+            var distances = new float[path.Count];
+            for (int i = 1; i < path.Count; i++) distances[i] = distances[i - 1] + Distance(path[i - 1], path[i]);
+            float[] At(float distance)
+            {
+                int low = 0, high = path.Count - 1;
+                while (high - low > 1)
+                {
+                    int middle = (low + high) / 2;
+                    if (distances[middle] <= distance) low = middle; else high = middle;
+                }
+                float span = distances[high] - distances[low];
+                return Interpolate(path[low], path[high], span > 0f ? (distance - distances[low]) / span : 0f);
+            }
+            var group = new ExecutionGroup();
+            void AddOriginal(float from, float to)
+            {
+                float cursor = from;
+                for (int i = 1; i < path.Count && cursor < to; i++)
+                {
+                    if (distances[i] <= cursor) continue;
+                    float end = Mathf.Min(to, distances[i]);
+                    group.Add(new ExecutionPiece { From = At(cursor), To = At(end), Length = end - cursor });
+                    cursor = end;
+                }
+            }
+            float previousEnd = 0f;
+            for (int k = 1; k < blendAnchors.Count - 1; k++)
+            {
+                int index = blendAnchors[k];
+                float center = distances[index];
+                float incoming = center - distances[blendAnchors[k - 1]];
+                float outgoing = distances[blendAnchors[k + 1]] - center;
+                if (incoming < 0.001f || outgoing < 0.001f) continue;
+                if (!settings.EnableCornerSmoothing) { RetainedSharpCorners++; continue; }
+                var curve = TrySmoothPathCorner(path[index], incoming, outgoing, trim => new ExecutionPiece
+                {
+                    From = At(center - trim), Control = path[index], To = At(center + trim), Length = 2f * trim
+                });
+                if (curve == null) { RetainedSharpCorners++; continue; }
+                float half = curve.Length * 0.5f;
+                AddOriginal(previousEnd, center - half);
+                group.Add(curve);
+                previousEnd = center + half;
+                SmoothedPathCorners++;
+            }
+            AddOriginal(previousEnd, distances[path.Count - 1]);
+            if (group.Pieces.Count == 0) return;
+            group.Profile = BuildTcpMotionProfile(group);
+            executionGroups.Add(group);
+        }
+
         private static bool IsStraightPathCorner(float[] before, float[] corner, float[] after)
         {
             float dot = 0f;
@@ -230,13 +302,20 @@ namespace RobotIK
             for (int j = 0; j < corner.Length; j++)
                 dot += (corner[j] - before[j]) * (after[j] - corner[j]);
             if (dot / (incoming * outgoing) < -0.999f) return null;
+            return TrySmoothPathCorner(corner, incoming, outgoing,
+                trim => CreateAccuracyCurve(before, corner, after, incoming, outgoing, trim));
+        }
+
+        private ExecutionPiece TrySmoothPathCorner(float[] corner, float incoming, float outgoing,
+            Func<float, ExecutionPiece> createCurve)
+        {
             Vector3 center = evaluateTcp(corner).position;
             float accuracyMeters = Mathf.Max(1f, settings.PathAccuracyMillimeters) * 0.001f;
             float trim = 0.45f * Mathf.Min(incoming, outgoing);
             float rejectedTrim = trim;
             for (int attempt = 0; attempt < 16 && trim > 0.0001f; attempt++, trim *= 0.5f)
             {
-                ExecutionPiece curve = CreateAccuracyCurve(before, corner, after, incoming, outgoing, trim);
+                ExecutionPiece curve = createCurve(trim);
                 if (!IsAccuracyCurveValid(curve, center, accuracyMeters))
                 { rejectedTrim = trim; continue; }
                 // Use as much of the requested distance as safely fits, instead of
@@ -244,7 +323,7 @@ namespace RobotIK
                 for (int refinement = 0; refinement < 8 && rejectedTrim - trim > 0.0001f; refinement++)
                 {
                     float candidateTrim = 0.5f * (trim + rejectedTrim);
-                    ExecutionPiece candidate = CreateAccuracyCurve(before, corner, after, incoming, outgoing, candidateTrim);
+                    ExecutionPiece candidate = createCurve(candidateTrim);
                     if (IsAccuracyCurveValid(candidate, center, accuracyMeters))
                     { trim = candidateTrim; curve = candidate; }
                     else rejectedTrim = candidateTrim;
@@ -266,11 +345,14 @@ namespace RobotIK
         private bool IsAccuracyCurveValid(ExecutionPiece curve, Vector3 center, float accuracyMeters)
         {
             int count = Mathf.Max(16, Mathf.CeilToInt(curve.Length / Mathf.Min(0.5f, Mathf.Max(0.01f, settings.CollisionResolutionDegrees))));
+            float[] previous = null;
             for (int i = 0; i <= count; i++)
             {
                 float[] angles = curve.Evaluate(i / (float)count);
                 if (Vector3.Distance(evaluateTcp(angles).position, center) > accuracyMeters ||
-                    (isConfigurationValid != null && !isConfigurationValid(angles))) return false;
+                    (isConfigurationValid != null && !isConfigurationValid(angles)) ||
+                    (previous != null && isSegmentValid != null && !isSegmentValid(previous, angles))) return false;
+                previous = angles;
             }
             return true;
         }

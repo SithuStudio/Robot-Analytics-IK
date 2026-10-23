@@ -59,6 +59,52 @@ namespace RobotIK
                 stepY*((y+Math.Min(y+1f,extent.y))*.5f) + stepZ*((z+Math.Min(z+1f,extent.z))*.5f);
         }
 
+        /// <summary>Plan-local exception for endpoint cells whose robot poses were validated.
+        /// The original scan remains immutable; all other cells keep their occupancy.</summary>
+        internal CartesianOccupancyGrid WithValidatedEndpointCells(int first, int last)
+            => WithValidatedEndpointCells(new[] { first, last });
+
+        internal CartesianOccupancyGrid WithValidatedEndpointCells(IEnumerable<int> endpoints)
+        {
+            var copy = new CartesianOccupancyGrid(occupied, origin, stepX, stepY, stepZ, extent);
+            foreach (int endpoint in endpoints)
+            {
+                copy.Cell(endpoint, out int x, out int y, out int z);
+                copy.occupied[x,y,z] = false;
+            }
+            return copy;
+        }
+
+        internal float EndpointAccessRadius => Mathf.Max(0.25f,
+            3f * Mathf.Max(stepX.magnitude, Mathf.Max(stepY.magnitude, stepZ.magnitude)));
+
+        /// <summary>Connect validated endpoint poses through a local coarse-voxel shell.
+        /// Only guidance changes; callers must validate all robot samples and swept edges.</summary>
+        internal CartesianOccupancyGrid WithValidatedEndpointAccess(Vector3 a, Vector3 b, out int opened)
+        {
+            var copy = new CartesianOccupancyGrid(occupied, origin, stepX, stepY, stepZ, extent);
+            opened = 0;
+            float radius = EndpointAccessRadius;
+            // Reciprocal axes give conservative cell-index bounds even for transformed scans.
+            int rx = (int)Math.Ceiling(radius * reciprocalX.magnitude) + 1;
+            int ry = (int)Math.Ceiling(radius * reciprocalY.magnitude) + 1;
+            int rz = (int)Math.Ceiling(radius * reciprocalZ.magnitude) + 1;
+            foreach (Vector3 endpoint in new[] { a, b })
+            {
+                if (!TryCell(endpoint, out int id)) continue;
+                Cell(id, out int cx, out int cy, out int cz);
+                for (int x = Math.Max(0, cx - rx); x <= Math.Min(CountX - 1, cx + rx); x++)
+                for (int y = Math.Max(0, cy - ry); y <= Math.Min(CountY - 1, cy + ry); y++)
+                for (int z = Math.Max(0, cz - rz); z <= Math.Min(CountZ - 1, cz + rz); z++)
+                {
+                    if (!copy.occupied[x,y,z] || (Center(Index(x,y,z)) - endpoint).sqrMagnitude > radius * radius + 1e-8f) continue;
+                    copy.occupied[x,y,z] = false;
+                    opened++;
+                }
+            }
+            return copy;
+        }
+
         // Guidance cost only. SegmentFree and full MoveL validation remain the
         // acceptance checks; retry penalties never turn a free cell into an obstacle.
         internal float SegmentCost(Vector3 a,Vector3 b,IReadOnlyDictionary<int,float> penalties)

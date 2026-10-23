@@ -57,6 +57,8 @@ namespace RobotIK
             // Pose-target MoveL may choose a continuous endpoint IK branch. False keeps exact joint-goal semantics.
             public bool LinearAllowAlternateGoalConfiguration;
             public bool LinearAutomaticWaypoints;
+            public bool LinearIntermediatePositionRetry;
+            public bool LinearIntermediateRotationRetry;
             public int LinearWaypointMaximumEdges = 80;
             public float LinearWaypointSearchSeconds = 15f;
             public bool LinearOptimizePath = true;
