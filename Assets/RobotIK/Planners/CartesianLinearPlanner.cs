@@ -12,6 +12,8 @@ namespace RobotIK
     public sealed class CartesianLinearPlanner : RobotBaseSixAxisPlanner
     {
         public CartesianLinearPlanner(World world) : base(world) { }
+        public double LastSingularityRatio { get; private set; }
+        public double SingularityThreshold => world.LinearMinimumSingularValueRatio;
         private string rejection;
         private Vector3 rejectionPosition;
         private bool refinementCanHelp;
@@ -478,6 +480,7 @@ namespace RobotIK
             }
             double margin = world.LinearMinimumSingularValueRatio;
             double ratio = maximum > 1e-12 ? Math.Sqrt(Math.Max(0, minimum) / maximum) : 0;
+            LastSingularityRatio = ratio;
             return ratio > margin || Reject($"Singularity ratio {ratio:G5}, required > {margin:G5}");
         }
         private bool RejectCollision(string message)

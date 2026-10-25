@@ -13,6 +13,16 @@ namespace RobotIK
     [RequireComponent(typeof(RobotBaseSixAxisRig))]
     public sealed class RobotBaseSixAxisAnalyticIK : MonoBehaviour
     {
+        public Action<PlanDiagnosticEvent> DiagnosticRejected;
+        private Vector3 diagnosticTargetPosition;
+        private Quaternion diagnosticTargetRotation;
+        private void ReportIk(PlanDiagnosticCode code, string message, float[] q = null, int joint = -1, float measured = 0, Vector2? range = null)
+        {
+            DiagnosticRejected?.Invoke(new PlanDiagnosticEvent { Code = code, Message = message, HasTcp = true,
+                TcpPosition = diagnosticTargetPosition, TcpRotation = diagnosticTargetRotation, HasJoints = q != null, Joints = q, Joint = joint,
+                HasMeasurement = range.HasValue, Measured = measured, HasRange = range.HasValue, Minimum = range?.x ?? 0, Maximum = range?.y ?? 0,
+                Units = "degrees", EvidenceKind = "Analytical IK requested TCP / rejected branch; not a physical contact point." });
+        }
         public enum ShoulderPosture
         {
             Automatic,
@@ -74,6 +84,16 @@ namespace RobotIK
         /// <summary>When enabled, Update continuously overrides external joint motion.</summary>
         public bool SolveContinuously { get => solveContinuously; set => solveContinuously = value; }
         public bool IsCalibrated => calibrated;
+        public bool TryGetArmStretchGeometry(out ArmStretchGeometry geometry)
+        {
+            geometry = default;
+            if (!calibrated && !CalibrateFromRig()) return false;
+            float product = link1Length * link2Length;
+            if (product <= Epsilon * Epsilon) return false;
+            geometry = new ArmStretchGeometry(link1Length, link2Length, Vector3.Dot(firstLink, secondLink) / product,
+                Vector3.Dot(firstLink, Vector3.Cross(homeAxes[2], secondLink)) / product);
+            return geometry.Valid;
+        }
         public string CalibrationStatus { get; private set; } = "Not calibrated";
 
         private void Reset() => rig = GetComponent<RobotBaseSixAxisRig>();
@@ -176,8 +196,9 @@ namespace RobotIK
         /// <summary>Returns every reachable, limit-respecting analytical branch.</summary>
         public bool SolveAll(Vector3 targetPosition, Quaternion targetRotation, out List<float[]> solutions)
         {
+            diagnosticTargetPosition = targetPosition; diagnosticTargetRotation = targetRotation;
             solutions = new List<float[]>(8);
-            if (!calibrated && !CalibrateFromRig()) return false;
+            if (!calibrated && !CalibrateFromRig()) { ReportIk(PlanDiagnosticCode.InvalidSetup, CalibrationStatus); return false; }
 
             Transform baseFrame = rig.Base;
             Vector3 goalPosition = baseFrame.InverseTransformPoint(targetPosition);
@@ -190,7 +211,7 @@ namespace RobotIK
             Vector3 projectedGoal = baseToGoal - baseAxis * Vector3.Dot(baseToGoal, baseAxis);
             float projectedDistance = projectedGoal.magnitude;
             if (projectedDistance < Epsilon || Mathf.Abs(shoulderAxisOffset) > projectedDistance + GeometryTolerance)
-                return false;
+            { ReportIk(projectedDistance < Epsilon ? PlanDiagnosticCode.IkNoSolution : PlanDiagnosticCode.RobotReach, $"Wrist projected radius {projectedDistance:G9} m, shoulder offset {Mathf.Abs(shoulderAxisOffset):G9} m. Degenerate axis or insufficient radius."); return false; }
 
             Vector3 projectedDirection = projectedGoal / projectedDistance;
             Vector3 sideDirection = Vector3.Cross(baseAxis, projectedDirection).normalized;
@@ -221,7 +242,8 @@ namespace RobotIK
                 float radiusSquared = planarGoal.sqrMagnitude;
                 float elbowCosine = (radiusSquared - link1Length * link1Length - link2Length * link2Length) /
                                     (2f * link1Length * link2Length);
-                if (elbowCosine < -1f - AxisTolerance || elbowCosine > 1f + AxisTolerance) continue;
+                if (elbowCosine < -1f - AxisTolerance || elbowCosine > 1f + AxisTolerance)
+                { ReportIk(PlanDiagnosticCode.RobotReach, $"Shoulder/elbow geometry rejected branch: elbow cosine {elbowCosine:G9} outside [-1,1] (tolerance {AxisTolerance:G9}). Links {link1Length:G9}, {link2Length:G9} m."); continue; }
                 elbowCosine = Mathf.Clamp(elbowCosine, -1f, 1f);
 
                 float goalAngle = Mathf.Atan2(Vector3.Dot(planarGoal, linkY), Vector3.Dot(planarGoal, linkX));
@@ -250,6 +272,7 @@ namespace RobotIK
                 }
             }
 
+            if (solutions.Count == 0) ReportIk(PlanDiagnosticCode.IkNoSolution, "No analytical branch survived geometry, configured posture filters and joint limits. See branch rejection evidence; this alone does not identify a unique cause.");
             return solutions.Count > 0;
         }
 
@@ -406,7 +429,9 @@ namespace RobotIK
             for (int i = 0; i < result.Length; i++)
             {
                 float degrees = radians[i] * Mathf.Rad2Deg;
-                if (!TryEquivalentWithinLimits(degrees, current[i], limits[i], out result[i])) return;
+                if (!TryEquivalentWithinLimits(degrees, current[i], limits[i], out result[i]))
+                { ReportIk(PlanDiagnosticCode.JointLimit, $"J{i + 1}: no 360-degree equivalent of {degrees:G9} degrees lies within [{limits[i].x:G9}, {limits[i].y:G9}].",
+                    Array.ConvertAll(radians, x => x * Mathf.Rad2Deg), i, degrees, limits[i]); return; }
             }
 
             for (int i = 0; i < solutions.Count; i++)
