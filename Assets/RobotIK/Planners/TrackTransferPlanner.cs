@@ -242,6 +242,52 @@ namespace RobotIK
             result.States.Clear(); result.Poses.Clear();
             for (int i = reverse.States.Count - 1; i >= 0; i--) { result.States.Add(reverse.States[i]); result.Poses.Add(reverse.Poses[i]); }
         }
+        // Round genuine joint-space corners, replacing the executable dense states.
+        // Every blend edge is swept-checked; a rejected/budget-limited blend leaves
+        // the complete original window untouched. Final Cartesian MoveL is separate.
+        public IEnumerator Smooth(Result result, float maximumTcpDeviationMillimeters)
+        {
+            if (!result.Found || result.States.Count < 4 || !LinearTrackAxis.Finite(maximumTcpDeviationMillimeters) || maximumTcpDeviationMillimeters <= 0) yield break;
+            int accepted = 0;
+            for (int corner = 2; corner < result.States.Count - 2 && accepted < 32; corner++)
+            {
+                if (world.ShouldStop?.Invoke() == true || !(world.CanRefine?.Invoke() ?? true) || result.Checks >= world.MaximumChecks - 128) yield break;
+                if (SameDirection(result.States[corner - 1], result.States[corner], result.States[corner + 1])) continue;
+                int first = Math.Max(0, corner - 8), last = Math.Min(result.States.Count - 1, corner + 8);
+                var a = result.States[first]; var control = result.States[corner]; var b = result.States[last];
+                var states = new List<ArmTrackState>(); var poses = new List<Pose>(); var prior = a; bool valid = true;
+                float oldPenalty = 0;
+                if (world.Penalty != null) for (int i = first; i <= last; i++) oldPenalty = Mathf.Max(oldPenalty, world.Penalty(result.States[i]));
+                for (int sample = 1; sample <= 24 && valid; sample++)
+                {
+                    float t = sample / 24f;
+                    var state = sample == 24 ? b : CoordinatedMoveLPlanner.Interpolate(CoordinatedMoveLPlanner.Interpolate(a, control, t), CoordinatedMoveLPlanner.Interpolate(control, b, t), t);
+                    bool edgeValid = false;
+                    var edge = Edge(prior, state, result, states, poses, ok => edgeValid = ok, world.CanRefine);
+                    try { while (edge.MoveNext()) yield return edge.Current; } finally { (edge as IDisposable)?.Dispose(); }
+                    valid = edgeValid; prior = state;
+                }
+                for (int i = 0; i < states.Count && valid; i++)
+                {
+                    if (world.Penalty != null && world.Penalty(states[i]) > oldPenalty + .00001f) { valid = false; break; }
+                    float distance = float.PositiveInfinity;
+                    for (int j = first + 1; j <= last; j++)
+                    {
+                        var start = result.Poses[j - 1].position; var delta = result.Poses[j].position - start;
+                        float t = delta.sqrMagnitude < 1e-12f ? 0 : Mathf.Clamp01(Vector3.Dot(poses[i].position - start, delta) / delta.sqrMagnitude);
+                        distance = Mathf.Min(distance, Vector3.Distance(poses[i].position, start + delta * t));
+                    }
+                    if (distance > maximumTcpDeviationMillimeters * .001f) valid = false;
+                }
+                if (valid && states.Count > 0 && world.ShouldStop?.Invoke() != true && (world.CanRefine?.Invoke() ?? true))
+                {
+                    result.States.RemoveRange(first + 1, last - first); result.Poses.RemoveRange(first + 1, last - first);
+                    result.States.InsertRange(first + 1, states); result.Poses.InsertRange(first + 1, poses);
+                    corner = first + states.Count; accepted++;
+                    world.Progress?.Invoke($"Refining transfer: {accepted} validated bounded corner blends.");
+                }
+            }
+        }
         private static bool SameDirection(ArmTrackState a, ArmTrackState b, ArmTrackState c)
         {
             double dot = 0, xLength = 0, yLength = 0;

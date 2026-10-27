@@ -445,7 +445,16 @@ namespace RobotIK
         private FloatField transferSpacing, transferApproach, transferBudget, transferSpeed, transferAcceleration;
         private IntegerField transferStations, transferIterations, transferWaypoints;
         private FloatField transferReductionPosition, transferReductionRotation, transferOptimizationBudget;
-        private Toggle transferPreferCorridor, transferRequireCorridor;
+        private Toggle transferPreferCorridor, transferRequireCorridor, transferObstacleAware;
+        private Button currentTransferPlanner, hybridTransferPlanner;
+        private VisualElement transferMethodControls;
+        private Foldout hybridTransferSettings;
+        private Foldout currentCorridorSettings, currentOptimizationSettings;
+        private FloatField hybridTotal, hybridQuick, hybridSmooth;
+        private IntegerField hybridTrials;
+        private Label transferMethodDescription;
+        private VisualElement hybridQuickStep, hybridSearchStep, hybridSmoothStep;
+        private Label hybridQuickTitle, hybridQuickDetail, hybridSearchTitle, hybridSearchDetail, hybridSmoothTitle, hybridSmoothDetail;
         private FloatField transferCorridorDrop;
         private Label transferDetails;
         private readonly List<Toggle> trackChannels = new List<Toggle>();
@@ -787,6 +796,9 @@ namespace RobotIK
             feedbackSummary.AddToClassList("rm-feedback-summary"); stepLog.Add(feedbackSummary);
             endpointStep = AddStep(feedbackSummary, "endpoint-step", out endpointStepTitle, out endpointStepDetail);
             planStep = AddStep(feedbackSummary, "plan-step", out planStepTitle, out planStepDetail);
+            hybridQuickStep = AddStep(feedbackSummary, "hybrid-quick-step", out hybridQuickTitle, out hybridQuickDetail);
+            hybridSearchStep = AddStep(feedbackSummary, "hybrid-search-step", out hybridSearchTitle, out hybridSearchDetail);
+            hybridSmoothStep = AddStep(feedbackSummary, "hybrid-smoothing-step", out hybridSmoothTitle, out hybridSmoothDetail);
             motionStep = AddStep(feedbackSummary, "motion-step", out motionStepTitle, out motionStepDetail);
             peakStretchFeedback = Text(string.Empty, "rm-track-info"); peakStretchFeedback.name = "peak-stretch-feedback"; feedbackSummary.Add(peakStretchFeedback);
             feedbackNext = Text(string.Empty, "rm-step-next"); feedbackNext.name = "feedback-next"; feedbackSummary.Add(feedbackNext);
@@ -1130,6 +1142,35 @@ namespace RobotIK
             stagedTransferMode = new Toggle("Track transfer → MoveL") { name = "track-staged-transfer",
                 tooltip = "Arm first when both exact endpoints have IK here. Otherwise plan a safe arm/track transfer to a reachable station, stop E1, then execute final MoveL. Entire sequence is validated first." };
             stagedTransferMode.AddToClassList("rm-edit-toggle"); trackBody.Add(stagedTransferMode);
+            trackBody.Add(Text("Transfer planner", "rm-group-title"));
+            transferMethodControls = Element("rm-tabs"); transferMethodControls.name = "transfer-planner-method"; trackBody.Add(transferMethodControls);
+            currentTransferPlanner = new Button(() => TrackUiResult(planner.SetTransferPlannerMethod(RobotBaseSixAxisMotionPlanner.TransferPlannerMethod.Current), "Stop before changing transfer planner.")) { text = "Current", name = "transfer-planner-current" };
+            hybridTransferPlanner = new Button(() =>
+            {
+                bool selected = planner.SetTransferPlannerMethod(RobotBaseSixAxisMotionPlanner.TransferPlannerMethod.Hybrid);
+                if (selected) hybridTransferSettings.value = true;
+                TrackUiResult(selected, "Stop before changing transfer planner.");
+            }) { text = "Hybrid · NEW", name = "transfer-planner-hybrid" };
+            currentTransferPlanner.AddToClassList("rm-tab"); hybridTransferPlanner.AddToClassList("rm-tab");
+            transferMethodControls.Add(currentTransferPlanner); transferMethodControls.Add(hybridTransferPlanner);
+            transferMethodDescription = Text(string.Empty, "rm-track-info"); trackBody.Add(transferMethodDescription);
+            hybridTransferSettings = new Foldout { text = "Hybrid settings", name = "hybrid-transfer-settings", value = false }; trackBody.Add(hybridTransferSettings);
+            hybridTotal = new FloatField("Total budget · s") { name = "hybrid-total-budget", isDelayed = true };
+            hybridQuick = new FloatField("Quick trials · s") { name = "hybrid-quick-budget", isDelayed = true };
+            hybridTrials = new IntegerField("Search trials") { name = "hybrid-search-trials", isDelayed = true };
+            hybridTrials.tooltip = "Maximum extension rounds per connection. Connections share the total time and collision-check budget.";
+            hybridSmooth = new FloatField("Smoothing · s") { name = "hybrid-smoothing-budget", isDelayed = true };
+            var hybridGrid = Element("rm-transfer-grid"); hybridGrid.name = "hybrid-transfer-grid"; hybridTransferSettings.Add(hybridGrid);
+            foreach (var field in new VisualElement[] { hybridTotal, hybridQuick, hybridTrials, hybridSmooth })
+            {
+                var cell = Element("rm-transfer-cell"); hybridGrid.Add(cell); cell.Add(field);
+                field.AddToClassList("rm-edit-dropdown"); field.AddToClassList("rm-transfer-field");
+            }
+            hybridTransferSettings.Add(Text("RRT-Connect · arm + E1. One total budget includes search, smoothing and validation. Exact endpoints; no wrist flips.", "rm-track-info"));
+            void HybridChanged() => TrackUiResult(planner.SetHybridTransferOptions(hybridTotal.value, hybridQuick.value, hybridTrials.value, hybridSmooth.value),
+                "Stop before editing. Total 1–600 s; quick + smoothing must be below total; search trials 100–100000.");
+            hybridTotal.RegisterValueChangedCallback(_ => HybridChanged()); hybridQuick.RegisterValueChangedCallback(_ => HybridChanged());
+            hybridTrials.RegisterValueChangedCallback(_ => HybridChanged()); hybridSmooth.RegisterValueChangedCallback(_ => HybridChanged());
             stagedTransferSettings = new Foldout { text = "Track transfer settings", value = false, name = "track-transfer-settings" }; trackBody.Add(stagedTransferSettings);
             transferSpacing = new FloatField("Station step · mm") { name = "track-transfer-spacing", isDelayed = true };
             transferWaypoints = new IntegerField("Preferred max points") { name = "track-transfer-waypoints", isDelayed = true,
@@ -1149,6 +1190,11 @@ namespace RobotIK
             }
             stagedTransferSettings.Add(Text("Preferred maximum on next plan. Required poses and tolerance limits may retain more points.", "rm-track-info"));
             var corridorOptions = new Foldout { text = "Lower transfer corridor", value = false, name = "track-lower-corridor" }; stagedTransferSettings.Add(corridorOptions);
+            currentCorridorSettings = corridorOptions;
+            transferObstacleAware = new Toggle("Obstacle-aware detours") { name = "track-obstacle-aware", value = planner.ObstacleAwareTransfer,
+                tooltip = "When a lower corridor is preferred but not required: try raised/side detours from obstacle bounds and the calibrated track, share search across stations/postures, and compare fully validated routes. Clearance never relaxes." };
+            transferObstacleAware.AddToClassList("rm-edit-toggle"); corridorOptions.Add(transferObstacleAware);
+            transferObstacleAware.RegisterValueChangedCallback(e => TrackUiResult(planner.SetObstacleAwareTransfer(e.newValue), "Stop before changing obstacle-aware transfer."));
             transferPreferCorridor = new Toggle("Prefer lower corridor") { name = "track-prefer-corridor", tooltip = "Try downward retract, level travel below Start/approach, then upward approach before free-posture transfer. Path accuracy rounds the shoulders." };
             transferRequireCorridor = new Toggle("Require corridor") { name = "track-require-corridor", tooltip = "Fail if no validated lower corridor exists; do not fall back to a free-posture route." };
             transferCorridorDrop = new FloatField("Corridor drop · mm") { name = "track-corridor-drop", isDelayed = true };
@@ -1161,6 +1207,7 @@ namespace RobotIK
             }
             transferPreferCorridor.RegisterValueChangedCallback(_ => CorridorOptionsChanged()); transferRequireCorridor.RegisterValueChangedCallback(_ => CorridorOptionsChanged()); transferCorridorDrop.RegisterValueChangedCallback(_ => CorridorOptionsChanged());
             var optimizationOptions = new Foldout { text = "Waypoint optimization", name = "track-waypoint-optimization", value = false }; stagedTransferSettings.Add(optimizationOptions);
+            currentOptimizationSettings = optimizationOptions;
             var optimizationGrid = Element("rm-transfer-grid"); optimizationOptions.Add(optimizationGrid);
             transferReductionPosition = new FloatField("Transfer deviation · mm") { name = "track-reduction-position", isDelayed = true };
             transferReductionRotation = new FloatField("Tool deviation · °") { name = "track-reduction-rotation", isDelayed = true };
@@ -1328,12 +1375,25 @@ namespace RobotIK
             bool moveL = planner.SelectedPlanner == RobotBaseSixAxisMotionPlanner.PlannerAlgorithm.CartesianLinear;
             stagedTransferMode.SetValueWithoutNotify(planner.StagedTrackTransferEnabled); stagedTransferMode.SetEnabled(moveL);
             stagedTransferSettings.SetEnabled(moveL && planner.StagedTrackTransferEnabled);
+            bool hybrid = planner.SelectedTransferPlanner == RobotBaseSixAxisMotionPlanner.TransferPlannerMethod.Hybrid;
+            transferMethodControls.SetEnabled(moveL && planner.StagedTrackTransferEnabled);
+            currentTransferPlanner.EnableInClassList("rm-tab--active", !hybrid); hybridTransferPlanner.EnableInClassList("rm-tab--active", hybrid);
+            transferMethodDescription.text = hybrid ? "Quick corridors → arm + track search → validated smoothing" : "Existing transfer logic and settings";
+            hybridTransferSettings.style.display = hybrid ? DisplayStyle.Flex : DisplayStyle.None;
+            hybridTransferSettings.SetEnabled(moveL && planner.StagedTrackTransferEnabled);
+            hybridTotal.SetValueWithoutNotify(planner.HybridTotalSeconds); hybridQuick.SetValueWithoutNotify(planner.HybridQuickSeconds);
+            hybridTrials.SetValueWithoutNotify(planner.HybridSearchTrials); hybridSmooth.SetValueWithoutNotify(planner.HybridSmoothingSeconds);
+            transferBudget.parent.style.display = hybrid ? DisplayStyle.None : DisplayStyle.Flex;
+            transferIterations.parent.style.display = hybrid ? DisplayStyle.None : DisplayStyle.Flex;
+            currentCorridorSettings.style.display = hybrid ? DisplayStyle.None : DisplayStyle.Flex;
+            currentOptimizationSettings.style.display = hybrid ? DisplayStyle.None : DisplayStyle.Flex;
             transferSpacing.SetValueWithoutNotify(planner.TransferStationSpacingMillimeters); transferStations.SetValueWithoutNotify(planner.TransferMaximumStations);
             transferApproach.SetValueWithoutNotify(planner.TransferApproachMillimeters); transferIterations.SetValueWithoutNotify(planner.TransferPostureIterations);
             transferBudget.SetValueWithoutNotify(planner.CoordinatedSearchSeconds); transferSpeed.SetValueWithoutNotify(planner.CoordinatedTrackSpeedMillimetersPerSecond);
             transferAcceleration.SetValueWithoutNotify(planner.TransferTrackAcceleration);
             transferWaypoints.SetValueWithoutNotify(planner.TransferTargetWaypoints);
             transferPreferCorridor.SetValueWithoutNotify(planner.PreferLowerTransferCorridor); transferRequireCorridor.SetValueWithoutNotify(planner.RequireLowerTransferCorridor); transferCorridorDrop.SetValueWithoutNotify(planner.TransferCorridorDropMm);
+            transferObstacleAware.SetValueWithoutNotify(planner.ObstacleAwareTransfer); transferObstacleAware.SetEnabled(planner.PreferLowerTransferCorridor && !planner.RequireLowerTransferCorridor);
             transferReductionPosition.SetValueWithoutNotify(planner.TransferReductionPositionMm);
             transferReductionRotation.SetValueWithoutNotify(planner.TransferReductionRotationDegrees);
             transferOptimizationBudget.SetValueWithoutNotify(planner.TransferOptimizationBudgetSeconds);
@@ -1414,6 +1474,16 @@ namespace RobotIK
 
         private void RefreshStepLog(RobotBaseSixAxisMotionPlanner.MotionState state)
         {
+            bool hybrid = planner.SelectedTransferPlanner == RobotBaseSixAxisMotionPlanner.TransferPlannerMethod.Hybrid && planner.StagedTrackTransferEnabled &&
+                planner.LinearTrack != null && planner.LinearTrack.TrackEnabled && !planner.TrackHeldForReachableEndpoints;
+            hybridQuickStep.style.display = hybrid ? DisplayStyle.Flex : DisplayStyle.None;
+            hybridSearchStep.style.display = hybrid ? DisplayStyle.Flex : DisplayStyle.None;
+            hybridSmoothStep.style.display = hybrid ? DisplayStyle.Flex : DisplayStyle.None;
+            string HybridTone(string detail, string stage) => planner.HybridStage == stage && planner.IsBusy ? "current" :
+                detail.StartsWith("Route found") || detail.StartsWith("Validated") || detail.StartsWith("Rounded corridor") ? "passed" : "neutral";
+            SetStep(hybridQuickStep, hybridQuickTitle, hybridQuickDetail, "Quick corridors", planner.HybridQuickFeedback, HybridTone(planner.HybridQuickFeedback,"Quick corridors"));
+            SetStep(hybridSearchStep, hybridSearchTitle, hybridSearchDetail, "Arm + E1 search", planner.HybridSearchFeedback, HybridTone(planner.HybridSearchFeedback,"Arm + E1 search"));
+            SetStep(hybridSmoothStep, hybridSmoothTitle, hybridSmoothDetail, "Validated smoothing", planner.HybridSmoothingFeedback, HybridTone(planner.HybridSmoothingFeedback,"Validated smoothing"));
             bool endpointsValid = planner.StartIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid &&
                 planner.EndIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Valid;
             bool endpointFailed = planner.StartIkState == RobotBaseSixAxisMotionPlanner.EndpointIkState.Collision ||
@@ -1521,6 +1591,7 @@ namespace RobotIK
                 state == RobotBaseSixAxisMotionPlanner.MotionState.Failed ? planStepTitle.text :
                 state == RobotBaseSixAxisMotionPlanner.MotionState.Stopped ? planner.LastStopWasPlanning ? "Planning cancelled" : "Motion stopped" : "Ready to plan";
             feedbackSummary.text = summary;
+            if (hybrid) feedbackSummary.text = state == RobotBaseSixAxisMotionPlanner.MotionState.Planning ? "Hybrid · " + planner.HybridStage : "Hybrid · " + summary;
             feedbackSummary.tooltip = feedbackNext.text;
             feedbackSummary.EnableInClassList("rm-feedback-summary--failed", state == RobotBaseSixAxisMotionPlanner.MotionState.Failed);
             // Expand only on a new failure; ordinary refreshes preserve user choice.

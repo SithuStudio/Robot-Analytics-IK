@@ -251,8 +251,11 @@ namespace RobotIK
             private readonly int beam;
             private readonly float stationSpacing, approach, trackAcceleration, reductionPosition, reductionRotation, optimizationBudget;
             private readonly int stations, iterations, targetWaypoints;
-            private readonly bool preferCorridor, requireCorridor;
+            private readonly bool preferCorridor, requireCorridor, obstacleAware;
             private readonly float corridorDrop, corridorBlend;
+            private readonly TransferPlannerMethod method;
+            private readonly float hybridTotal, hybridQuick, hybridSmooth;
+            private readonly int hybridTrials;
             internal CoordinatedTargets(RobotBaseSixAxisMotionPlanner p)
             {
                 IsStaged = p.stagedTrackTransfer; stationSpacing = p.transferStationSpacingMillimeters; approach = p.transferApproachMillimeters;
@@ -260,6 +263,8 @@ namespace RobotIK
                 trackAcceleration = p.transferTrackAcceleration;
                 targetWaypoints = p.transferTargetWaypoints;
                 preferCorridor = p.preferLowerTransferCorridor; requireCorridor = p.requireLowerTransferCorridor; corridorDrop = p.transferCorridorDropMm; corridorBlend = p.pathAccuracyMillimeters;
+                obstacleAware = p.obstacleAwareTransfer;
+                method = p.transferPlannerMethod; hybridTotal = p.hybridTotalSeconds; hybridQuick = p.hybridQuickSeconds; hybridSmooth = p.hybridSmoothingSeconds; hybridTrials = p.hybridSearchTrials;
                 reductionPosition = p.transferReductionPositionMm; reductionRotation = p.transferReductionRotationDegrees; optimizationBudget = p.transferOptimizationBudgetSeconds;
                 var all = new List<Transform> { p.startPose };
                 foreach (var point in p.intermediateWaypoints ?? Array.Empty<Transform>()) if (point != null) all.Add(point);
@@ -271,7 +276,8 @@ namespace RobotIK
             internal bool Matches(RobotBaseSixAxisMotionPlanner p)
             {
                 if (p.plannerAlgorithm != PlannerAlgorithm.CartesianLinear || IsStaged != p.stagedTrackTransfer || (IsStaged ? !p.stagedTrackTransfer : !p.coordinatedMoveL) ||
-                    (IsStaged && (preferCorridor != p.preferLowerTransferCorridor || requireCorridor != p.requireLowerTransferCorridor || !corridorDrop.Equals(p.transferCorridorDropMm) || !corridorBlend.Equals(p.pathAccuracyMillimeters))) ||
+                    (IsStaged && (method != p.transferPlannerMethod || method == TransferPlannerMethod.Hybrid && (!hybridTotal.Equals(p.hybridTotalSeconds) || !hybridQuick.Equals(p.hybridQuickSeconds) || !hybridSmooth.Equals(p.hybridSmoothingSeconds) || hybridTrials != p.hybridSearchTrials))) ||
+                    (IsStaged && (obstacleAware != p.obstacleAwareTransfer || preferCorridor != p.preferLowerTransferCorridor || requireCorridor != p.requireLowerTransferCorridor || !corridorDrop.Equals(p.transferCorridorDropMm) || !corridorBlend.Equals(p.pathAccuracyMillimeters))) ||
                     (IsStaged && (!reductionPosition.Equals(p.transferReductionPositionMm) || !reductionRotation.Equals(p.transferReductionRotationDegrees) || !optimizationBudget.Equals(p.transferOptimizationBudgetSeconds))) ||
                     (IsStaged && (!stationSpacing.Equals(p.transferStationSpacingMillimeters) || !approach.Equals(p.transferApproachMillimeters) || !trackAcceleration.Equals(p.transferTrackAcceleration) || targetWaypoints != p.transferTargetWaypoints || stations != p.transferMaximumStations || iterations != p.transferPostureIterations)) ||
                     !cartesianStep.Equals(p.coordinatedCartesianStepMillimeters) || !trackStep.Equals(p.coordinatedTrackStepMillimeters) || beam != p.coordinatedBeamWidth ||

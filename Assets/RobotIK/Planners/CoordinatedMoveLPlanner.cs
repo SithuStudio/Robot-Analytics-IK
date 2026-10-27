@@ -22,6 +22,8 @@ namespace RobotIK
             public Func<ArmTrackState, CoordinatedStateEvaluation> Evaluate;
             public Func<bool> ShouldStop;
             public Func<Pose, float> StationForPose;
+            public Func<Pose, float> StationGuide;
+            public float MonotonicE1Direction;
             public float? WristZeroOffsetDegrees;
             public Func<ArmTrackState, float> Penalty;
             public Action<string> Progress;
@@ -40,6 +42,7 @@ namespace RobotIK
             public PlanDiagnosticCode StopCode = PlanDiagnosticCode.NoCompleteRoute;
             public string Failure = "No continuous coordinated MoveL route.";
             public int Checks, Layers;
+            public float ProgressFraction;
             public readonly List<ArmTrackState> States = new List<ArmTrackState>();
             public readonly List<Pose> Poses = new List<Pose>();
         }
@@ -88,18 +91,20 @@ namespace RobotIK
         {
             if (result == null) throw new ArgumentNullException(nameof(result));
             result.Found = false; result.States.Clear(); result.Poses.Clear(); result.Checks = result.Layers = 0;
+            result.ProgressFraction = 0; reportedCheckLimit = false;
             if (targets == null || targets.Count < 2 || world.StartStations == null || world.StartStations.Count == 0 ||
                 world.Solve == null || world.Evaluate == null || !LinearTrackAxis.Finite(world.CartesianStepMillimeters) || !LinearTrackAxis.Finite(world.TrackStepMillimeters) ||
                 !LinearTrackAxis.Finite(world.MinimumE1) || !LinearTrackAxis.Finite(world.MaximumE1) || !LinearTrackAxis.Finite(world.PreferredE1) ||
                 !LinearTrackAxis.Finite(world.JointSweepStepDegrees) || !LinearTrackAxis.Finite(world.TrackSweepStepMillimeters) ||
                 !LinearTrackAxis.Finite(world.PositionToleranceMeters) || !LinearTrackAxis.Finite(world.RotationToleranceDegrees) ||
-                world.PositionToleranceMeters < 0 || world.RotationToleranceDegrees < 0 || world.JointSweepStepDegrees <= 0 || world.TrackSweepStepMillimeters <= 0 ||
+                !LinearTrackAxis.Finite(world.MonotonicE1Direction) || world.PositionToleranceMeters < 0 || world.RotationToleranceDegrees < 0 || world.JointSweepStepDegrees <= 0 || world.TrackSweepStepMillimeters <= 0 ||
                 world.MinimumE1 > world.MaximumE1 || world.CartesianStepMillimeters <= 0 || world.TrackStepMillimeters <= 0 || world.BeamWidth < 1 || world.MaximumSamples < 2 || world.MaximumChecks < 1)
             { result.Failure = "Invalid coordinated search inputs."; yield break; }
             foreach (var target in targets) if (!FinitePose(target)) { result.Failure = "Cartesian target pose must be finite and have a valid rotation."; yield break; }
             for (int refinement = 0; refinement < 4; refinement++)
             {
                 if (Stop(result)) yield break;
+                result.ProgressFraction = 0;
                 var samples = Samples(targets, world.CartesianStepMillimeters / (1 << refinement));
                 if (samples == null) { result.StopCode = PlanDiagnosticCode.CheckLimit; result.Failure = "Coordinated Cartesian sample limit reached."; world.LimitReached?.Invoke(PlanDiagnosticCode.CheckLimit, result.Failure + $" Capacity {world.MaximumSamples} samples."); yield break; }
                 var frontier = new List<Node>();
@@ -118,6 +123,7 @@ namespace RobotIK
                 if (frontier.Count == 0) { result.Failure = "No collision-free, nonsingular exact Start configuration at sampled E1 values."; yield break; }
                 for (int layer = 1; layer < samples.Count && frontier.Count > 0; layer++)
                 {
+                    result.ProgressFraction = (layer - 1f) / Mathf.Max(1, samples.Count - 1);
                     if (Stop(result)) yield break;
                     result.Layers++;
                     world.Progress?.Invoke($"Coordinated MoveL: sample {layer}/{samples.Count - 1}, {frontier.Count} continuous candidates, refinement {refinement + 1}/4.");
@@ -129,8 +135,11 @@ namespace RobotIK
                         {
                             if (world.StationForPose != null && delta != 0) continue;
                             if (Stop(result)) yield break;
-                            float station = world.StationForPose != null ? world.StationForPose(samples[layer]) : Mathf.Clamp(parent.State.E1Millimeters + delta * world.TrackStepMillimeters, world.MinimumE1, world.MaximumE1);
+                            float preferredStation = world.StationGuide != null ? world.StationGuide(samples[layer]) : parent.State.E1Millimeters;
+                            if (!LinearTrackAxis.Finite(preferredStation)) continue;
+                            float station = world.StationForPose != null ? world.StationForPose(samples[layer]) : Mathf.Clamp(preferredStation + delta * world.TrackStepMillimeters, world.MinimumE1, world.MaximumE1);
                             if (!LinearTrackAxis.Finite(station) || station < world.MinimumE1 || station > world.MaximumE1) continue;
+                            if (world.MonotonicE1Direction * (station - parent.State.E1Millimeters) < -.0001f) continue;
                             if (!solutions.TryGetValue(station, out var candidates))
                             { candidates = world.Solve(samples[layer], station) ?? Array.Empty<ArmTrackState>(); solutions[station] = candidates; }
                             foreach (var candidate in candidates)
@@ -138,6 +147,7 @@ namespace RobotIK
                                 if (Stop(result)) yield break;
                                 if (candidate == null || !candidate.HasTrackAxis || !candidate.E1Millimeters.Equals(station) || Mathf.Abs(candidate.E1Millimeters - parent.State.E1Millimeters) > world.TrackStepMillimeters + .0001f) continue;
                                 float jump = 0; double cost = parent.Cost + Math.Abs((double)candidate.E1Millimeters - parent.State.E1Millimeters) / 20;
+                                if (world.StationGuide != null) cost += Math.Abs(station - preferredStation) / 20;
                                 for (int j = 0; j < 6; j++) { float d = Mathf.Abs(candidate[j] - parent.State[j]); jump = Mathf.Max(jump, d); cost += d * (j >= 3 ? 2 : 1); }
                                 if (jump > 5.00001f) { result.Failure = "No continuous arm branch: raw joint step exceeds 5 degrees; wrist flips forbidden."; world.Rejected?.Invoke(PlanDiagnosticCode.JointContinuity, candidate, samples[layer], result.Failure, jump, 5f); continue; }
                                 var key = new ArmTrackStateKey(candidate, 0);
@@ -173,7 +183,7 @@ namespace RobotIK
                     var chain = new List<Node>(); for (var node = frontier[0]; node != null; node = node.Parent) chain.Add(node); chain.Reverse();
                     result.States.Add(chain[0].State); result.Poses.Add(chain[0].Pose);
                     for (int i = 1; i < chain.Count; i++) { result.States.AddRange(chain[i].Edge); result.Poses.AddRange(chain[i].EdgePoses); }
-                    result.Found = true; result.Failure = null; yield break;
+                    result.ProgressFraction = 1; result.Found = true; result.Failure = null; yield break;
                 }
             }
             result.Failure = "Bounded coordinated search found no complete continuous route. " + result.Failure;

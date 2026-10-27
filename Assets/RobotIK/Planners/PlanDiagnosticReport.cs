@@ -10,6 +10,7 @@ namespace RobotIK
     public enum PlanReportOutcome { Running, Complete, Failed, SearchIncomplete, Cancelled, Stopped }
     [Serializable] public sealed class PlanDiagnosticEvent
     {
+        internal string RetentionKey;
         public int Id, Attempt, Sample, Joint = -1;
         public PlanDiagnosticCode Code;
         public string Phase, Message, RobotObject, ObstacleObject, EvidenceKind;
@@ -55,12 +56,28 @@ namespace RobotIK
         public List<PlanDiagnosticEvent> Events = new List<PlanDiagnosticEvent>();
         public List<PlanDiagnosticCounter> Counters = new List<PlanDiagnosticCounter>();
         private int sequence;
+        private Dictionary<string, int> retentionCounts;
         public void Add(PlanDiagnosticEvent item)
         {
             var counter = Counters.Find(x => x.Code == item.Code);
             if (counter == null) { counter = new PlanDiagnosticCounter { Code = item.Code }; Counters.Add(counter); }
             counter.Observations++; item = item.Copy(); item.Id = ++sequence;
-            if (Events.Count >= 128) { Events.RemoveAt(64); DroppedEvents++; }
+            string Key(PlanDiagnosticEvent e) => e.RetentionKey ?? (e.RetentionKey = e.Code + "|" + e.Phase + "|" + e.RobotObject + "|" + e.ObstacleObject + "|" + e.Joint);
+            if (retentionCounts == null)
+            {
+                retentionCounts = new Dictionary<string, int>();
+                foreach (var e in Events) { string key = Key(e); retentionCounts.TryGetValue(key, out int n); retentionCounts[key] = n + 1; }
+            }
+            if (Events.Count >= 128)
+            {
+                // Keep rare causes/object pairs when repeated invalid analytical
+                // branches would otherwise push every collision out of the report.
+                int victim = 0, largest = 1;
+                for (int i = 0; i < Events.Count; i++) if (retentionCounts[Key(Events[i])] > largest) { victim = i; largest = retentionCounts[Key(Events[i])]; }
+                retentionCounts[Key(Events[victim])]--;
+                Events.RemoveAt(victim); DroppedEvents++;
+            }
+            string itemKey = Key(item); retentionCounts.TryGetValue(itemKey, out int total); retentionCounts[itemKey] = total + 1;
             Events.Add(item); Revision++;
         }
         public static string StatusTitle(PlanDiagnosticCode code) => code switch

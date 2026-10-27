@@ -15,21 +15,14 @@ namespace RobotIK
         private sealed class TrackRun
         {
             public int First, Last;
-            public double Start, Duration, Distance, Speed, Acceleration, Ramp;
+            public double Start, Duration, Distance, Speed, Acceleration, Ramp, StartSpeed, EndSpeed, Deceleration;
             public double At(double elapsed)
             {
                 elapsed = Math.Max(0, Math.Min(Duration, elapsed));
-                if (elapsed < Ramp) return .5 * Acceleration * elapsed * elapsed;
-                if (elapsed <= Duration - Ramp) return .5 * Acceleration * Ramp * Ramp + Speed * (elapsed - Ramp);
+                if (elapsed < Ramp) return StartSpeed * elapsed + .5 * Acceleration * elapsed * elapsed;
+                if (elapsed <= Duration - Deceleration) return StartSpeed * Ramp + .5 * Acceleration * Ramp * Ramp + Speed * (elapsed - Ramp);
                 double remaining = Duration - elapsed;
-                return Distance - .5 * Acceleration * remaining * remaining;
-            }
-            public double TimeAt(double distance)
-            {
-                double rampDistance = .5 * Acceleration * Ramp * Ramp;
-                if (distance < rampDistance) return Math.Sqrt(2 * Math.Max(0, distance) / Acceleration);
-                if (distance > Distance - rampDistance) return Duration - Math.Sqrt(2 * Math.Max(0, Distance - distance) / Acceleration);
-                return Ramp + (distance - rampDistance) / Speed;
+                return Distance - EndSpeed * remaining - .5 * Acceleration * remaining * remaining;
             }
         }
         public float DurationSeconds => (float)times[times.Length - 1];
@@ -64,23 +57,44 @@ namespace RobotIK
                 double delta = (double)states[edge].E1Millimeters - states[edge - 1].E1Millimeters;
                 if (Math.Abs(delta) <= .00001)
                 { clock += durations[edge]; times[edge] = clock; edge++; continue; }
-                int first = edge - 1, last = edge; double speed = Math.Abs(delta) / durations[edge];
+                int first = edge - 1, last = edge;
                 while (last + 1 < states.Length)
                 {
                     double step = (double)states[last + 1].E1Millimeters - states[last].E1Millimeters;
                     if (Math.Abs(step) <= .00001 || Math.Sign(step) != Math.Sign(delta)) break;
-                    last++; speed = Math.Min(speed, Math.Abs(step) / durations[last]);
+                    last++;
                 }
-                double distance = Math.Abs((double)states[last].E1Millimeters - states[first].E1Millimeters);
-                speed = Math.Min(speed, Math.Sqrt(acceleration * distance));
-                var run = new TrackRun { First = first, Last = last, Start = clock, Distance = distance, Speed = speed, Acceleration = acceleration,
-                    Ramp = speed / acceleration, Duration = distance / speed + speed / acceleration };
+                // Keep a local cap for each edge. The former minimum over the
+                // entire run spread a near-stationary arm adjustment's tiny E1
+                // speed across meters of otherwise unrestricted rail travel.
+                var distances = new double[last - first];
+                var caps = new double[distances.Length];
+                var velocities = new double[distances.Length + 1];
                 for (int i = first + 1; i <= last; i++)
                 {
-                    times[i] = clock + run.TimeAt(Math.Abs((double)states[i].E1Millimeters - states[first].E1Millimeters));
-                    trackRuns[i] = run;
+                    int at = i - first - 1;
+                    distances[at] = Math.Abs((double)states[i].E1Millimeters - states[i - 1].E1Millimeters);
+                    caps[at] = distances[at] / durations[i];
+                    if (at > 0) velocities[at] = Math.Min(caps[at - 1], caps[at]);
                 }
-                clock += run.Duration; times[last] = clock; edge = last + 1;
+                // Stops remain at true holds/reversals. Interior samples retain a
+                // shared boundary velocity, bounded by both adjacent edge caps.
+                for (int i = 1; i < velocities.Length - 1; i++)
+                    velocities[i] = Math.Min(velocities[i], Math.Sqrt(velocities[i - 1] * velocities[i - 1] + 2 * acceleration * distances[i - 1]));
+                for (int i = velocities.Length - 2; i > 0; i--)
+                    velocities[i] = Math.Min(velocities[i], Math.Sqrt(velocities[i + 1] * velocities[i + 1] + 2 * acceleration * distances[i]));
+                for (int i = first + 1; i <= last; i++)
+                {
+                    int at = i - first - 1;
+                    double distance = distances[at], v0 = velocities[at], v1 = velocities[at + 1];
+                    double peak = Math.Min(caps[at], Math.Sqrt(acceleration * distance + .5 * (v0 * v0 + v1 * v1)));
+                    double ramp = Math.Max(0, (peak - v0) / acceleration), decel = Math.Max(0, (peak - v1) / acceleration);
+                    double cruise = Math.Max(0, distance - (v0 + peak) * ramp * .5 - (v1 + peak) * decel * .5);
+                    var run = new TrackRun { First = i - 1, Last = i, Start = clock, Distance = distance, Speed = peak, Acceleration = acceleration,
+                        Ramp = ramp, Deceleration = decel, StartSpeed = v0, EndSpeed = v1, Duration = ramp + cruise / peak + decel };
+                    trackRuns[i] = run; clock += run.Duration; times[i] = clock;
+                }
+                edge = last + 1;
             }
         }
         public ArmTrackState Evaluate(float seconds, out Pose expected)

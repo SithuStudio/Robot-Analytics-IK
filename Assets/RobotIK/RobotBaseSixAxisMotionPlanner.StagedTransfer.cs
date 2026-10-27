@@ -10,6 +10,14 @@ namespace RobotIK
         public enum TrackTransferPhase { Start, Retract, TrackTravel, Arrival, FinalMoveL }
         [Header("Staged track transfer then final MoveL")]
         [SerializeField] private bool stagedTrackTransfer;
+        [SerializeField] private bool obstacleAwareTransfer = true;
+        public bool ObstacleAwareTransfer => obstacleAwareTransfer;
+        public string SelectedTransferCorridor { get; private set; } = string.Empty;
+        public bool SetObstacleAwareTransfer(bool enabled)
+        {
+            if (IsBusy || (LinearTrack?.IsLocked ?? false)) return false;
+            obstacleAwareTransfer = enabled; NotifySceneEdited(); return true;
+        }
         [SerializeField, Min(1)] private float transferStationSpacingMillimeters = 250;
         [SerializeField, Range(3, 65)] private int transferMaximumStations = 17;
         [SerializeField, Min(10)] private float transferApproachMillimeters = 100;
@@ -88,6 +96,7 @@ namespace RobotIK
         private void ClearStagedPath()
         { stagedPath = false; transferWaypointIndices = Array.Empty<int>(); stagedCartesianEdges.Clear(); stagedPhases.Clear(); currentTransferPhase = string.Empty;
             UsedLowerTransferCorridor = false;
+            SelectedTransferCorridor = string.Empty;
             TransferWaypointsBeforeOptimization = 0; TransferOptimizationTimeSeconds = 0; TransferOptimizationSummary = string.Empty; }
         private TrackTransferPhase TransferPhase(ArmTrackState state, ArmTrackState first, float destination)
             => Mathf.Abs(state.E1Millimeters - destination) < .001f ? TrackTransferPhase.Arrival : Mathf.Abs(state.E1Millimeters - first.E1Millimeters) < .001f ? TrackTransferPhase.Retract : TrackTransferPhase.TrackTravel;
@@ -103,7 +112,7 @@ namespace RobotIK
             }
         }
         private void TransferLog(string text)
-        { if (stagedTransferLog.Count < 80) stagedTransferLog.Add(text); }
+        { if (stagedTransferLog.Count >= 160) stagedTransferLog.RemoveAt(80); stagedTransferLog.Add(text); }
         private List<ArmTrackState> ValidTransferIk(Pose pose, float e1, Func<ArmTrackState, CoordinatedStateEvaluation> evaluate, out int rawCount)
         {
             var candidates = SolveCoordinatedCandidates(pose, e1); rawCount = candidates.Count;
@@ -150,6 +159,14 @@ namespace RobotIK
         private sealed class TransferStation
         { public float E1; public List<ArmTrackState> EndSolutions; }
         private IEnumerator PlanStagedTransferRoutine()
+        {
+            if (transferPlannerMethod == TransferPlannerMethod.Hybrid)
+                yield return StartCoroutine(PlanHybridTransferRoutine());
+            else if (obstacleAwareTransfer && preferLowerTransferCorridor && !requireLowerTransferCorridor)
+                yield return StartCoroutine(PlanObstacleAwareTransferRoutine());
+            else yield return StartCoroutine(PlanLegacyStagedTransferRoutine());
+        }
+        private IEnumerator PlanLegacyStagedTransferRoutine()
         {
             ClearCoordinatedPlan(); stagedTransferLog.Clear(); exactStationPlan = false;
             path.Clear(); motionProfile = null; ClearGridGizmoData(); ClearPathVisualization(); InvalidateEndpointChecks();
@@ -389,11 +406,16 @@ namespace RobotIK
                     session.Result.Checks >= 100000 ? PlanDiagnosticCode.CheckLimit : session.Clock.Elapsed.TotalSeconds >= Deadline() ? PlanDiagnosticCode.TimeLimit :
                     connections >= 12 ? PlanDiagnosticCode.AttemptLimit : PlanDiagnosticCode.NoCompleteRoute); yield break;
             }
+            yield return StartCoroutine(PublishStagedTransfer(transfer, final, selectedE1, selectedCorridorAnchors, "Lower corridor"));
+        }
+        private IEnumerator PublishStagedTransfer(TrackTransferPlanner.Result transfer, CoordinatedMoveLPlanner.Result final, float selectedE1, List<Pose> selectedCorridorAnchors, string corridorName)
+        {
             stagedPath = true;
-            UsedLowerTransferCorridor = selectedCorridorAnchors != null;
+            SelectedTransferCorridor = selectedCorridorAnchors == null && transferPlannerMethod == TransferPlannerMethod.Current ? "Free-posture transfer" : corridorName;
+            UsedLowerTransferCorridor = selectedCorridorAnchors != null && corridorName == "Lower corridor";
             for (int i = 0; i < transfer.States.Count; i++)
             {
-                var state = transfer.States[i]; coordinatedPath.Add(state); coordinatedPoses.Add(transfer.Poses[i]); stagedCartesianEdges.Add(i == 0 || UsedLowerTransferCorridor);
+                var state = transfer.States[i]; coordinatedPath.Add(state); coordinatedPoses.Add(transfer.Poses[i]); stagedCartesianEdges.Add(i == 0 || selectedCorridorAnchors != null);
                 stagedPhases.Add(i == 0 ? TrackTransferPhase.Start : TransferPhase(state, transfer.States[0], selectedE1));
             }
             for (int i = 1; i < final.States.Count; i++)
@@ -403,7 +425,7 @@ namespace RobotIK
             PreserveAuthoredWaypoints(coordinatedPoses, waypointPhases);
             var reductionClock = System.Diagnostics.Stopwatch.StartNew();
             transferWaypointIndices = TrackTransferWaypoints.Select(coordinatedPath, coordinatedPoses, waypointPhases, transferTargetWaypoints, transferReductionPositionMm, transferReductionRotationDegrees);
-            if (UsedLowerTransferCorridor)
+            if (selectedCorridorAnchors != null)
             {
                 // Rounded corridor legs are motion primitives. Show their on-path
                 // anchors, not every dense IK state used to execute those primitives.
@@ -425,11 +447,23 @@ namespace RobotIK
                 $"Start {phaseCounts[0]}, retract {phaseCounts[1]}, track travel {phaseCounts[2]}, arrival {phaseCounts[3]}, final MoveL {phaseCounts[4]}. " +
                 (PlannedWaypointCount > transferTargetWaypoints ? "Required poses, phase boundaries or tolerance limits prevent further reduction." : "Within preferred maximum; no padding.");
             TransferLog(TransferOptimizationSummary);
+            if (transferPlannerMethod == TransferPlannerMethod.Hybrid && coordinatedSearch != null)
+            {
+                planningTimeSeconds = (float)coordinatedSearch.Clock.Elapsed.TotalSeconds;
+                if (planningTimeSeconds >= hybridTotalSeconds)
+                {
+                    ClearCoordinatedPlan(); path.Clear(); coordinatedSearch = null;
+                    Fail("Hybrid total budget reached during waypoint preparation. No partial trajectory will execute.", PlanDiagnosticCode.TimeLimit);
+                    yield break;
+                }
+                coordinatedSearch = null;
+            }
             exactStationPlan = true; adaptiveGoalUsed = false; requestedGoalPosition = plannedGoalPosition = endTarget.position; requestedGoalRotation = plannedGoalRotation = endTarget.rotation;
             coordinatedSummary = $"Track transfer → final MoveL: destination E1 {selectedE1:F1} mm, {path.Count} validated samples, {planningIterations} checks, {planningTimeSeconds:F2} s. {transfer.RemovedControlPoints} unnecessary transfer corners removed. Continuous E1 timing, acceleration {transferTrackAcceleration:F0} mm/s². Exact Start/End; no wrist flips.";
+            if (transferPlannerMethod == TransferPlannerMethod.Hybrid) coordinatedSummary = "Hybrid · " + coordinatedSummary;
             coordinatedSummary += $" Planned waypoints {PlannedWaypointCount} (target {transferTargetWaypoints}); dense validation samples {coordinatedPath.Count}.";
             coordinatedSummary += " " + TransferOptimizationSummary;
-            coordinatedSummary += UsedLowerTransferCorridor ? " Lower corridor used: retract, rounded level transfer, upward approach; all dense IK/collision checks retained." : " Free-posture transfer used; TCP corridor shape is not guaranteed.";
+            coordinatedSummary += selectedCorridorAnchors != null ? $" {SelectedTransferCorridor} used; rounded TCP guide with all dense IK/collision checks retained." : " Free-posture transfer used; TCP corridor shape is not guaranteed.";
             TransferLog(coordinatedSummary); lastPlanSummary = coordinatedSummary; Status = coordinatedSummary;
             DrawCoordinatedPath(); yield return StartCoroutine(ExecuteCoordinatedPath());
         }

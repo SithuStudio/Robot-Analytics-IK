@@ -40,6 +40,16 @@ namespace RobotIK
         private void CaptureSearchRejection(PlanDiagnosticCode code, ArmTrackState state, Pose? pose, string message, float? measured, float? required)
         {
             if (state == null) return;
+            if (pose.HasValue && (code == PlanDiagnosticCode.JointContinuity || code == PlanDiagnosticCode.WristBranch))
+            {
+                if (LastPlanReport?.Outcome == PlanReportOutcome.Running)
+                    LastPlanReport.Add(new PlanDiagnosticEvent { Code = code, Phase = diagnosticPhase, Attempt = diagnosticAttempt,
+                        Sample = LastPlanReport.ConfigurationQueries, Message = message, HasE1 = state.HasTrackAxis, E1 = state.E1Millimeters,
+                        HasJoints = true, Joints = state.JointAnglesDegrees, HasTcp = true, TcpPosition = pose.Value.position, TcpRotation = pose.Value.rotation,
+                        HasMeasurement = measured.HasValue, Measured = measured ?? 0, HasLimit = required.HasValue, Required = required ?? 0, Units = "degrees",
+                        EvidenceKind = "Requested TCP / analytical candidate. Transition rejected before FK/swept validation; base pose not captured." });
+                return;
+            }
             // Evaluate FK inside a restoring scope; never leave the live robot at a rejected candidate.
             if (ValidateCombinedState(state) == null)
             {
@@ -69,6 +79,8 @@ namespace RobotIK
             if (endTarget != null) snapshot.Append($"End world meters={endTarget.position.ToString("G9")}, quaternion={endTarget.rotation.ToString("G9")}; ");
             snapshot.Append($"transfer_spacing_mm={transferStationSpacingMillimeters:G9}; max_stations={transferMaximumStations}; approach_mm={transferApproachMillimeters:G9}; posture_iterations={transferPostureIterations}; budget_s={coordinatedSearchSeconds:G9}; beam={coordinatedBeamWidth}; Cartesian_step_mm={coordinatedCartesianStepMillimeters:G9}; track_step_mm={coordinatedTrackStepMillimeters:G9}; ");
             snapshot.Append($"reach={avoidOverextension}/{strictStretchLimit}/{maximumStretchPercent:G9}/{stretchScope}; corridor={preferLowerTransferCorridor}/{requireLowerTransferCorridor}/{transferCorridorDropMm:G9}; ");
+            snapshot.Append($"obstacle_aware_transfer={obstacleAwareTransfer}; ");
+            snapshot.Append($"transfer_method={transferPlannerMethod}; hybrid_budget_s={hybridTotalSeconds:R}; hybrid_quick_s={hybridQuickSeconds:R}; hybrid_trials={hybridSearchTrials}; hybrid_smoothing_s={hybridSmoothingSeconds:R}; ");
             if (limits != null) for (int i = 0; i < limits.Length; i++) snapshot.Append($"J{i + 1}=[{limits[i].x:G9},{limits[i].y:G9}]; ");
             var track = LinearTrack;
             if (track != null) snapshot.Append($"E1_range_mm=[{track.MinimumMillimeters:G9},{track.MaximumMillimeters:G9}]; profile={JsonUtility.ToJson(track.Profile)}; ");
